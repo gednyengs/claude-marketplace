@@ -9,6 +9,5 @@
     "email": "7631051+gednyengs@users.noreply.github.com"
   },
   "license": "MIT",
-  "keywords": ["handoff", "session", "context", "resume", "compaction", "continuity"],
-  "hooks": "./hooks/hooks.json"
+  "keywords": ["handoff", "session", "context", "resume", "compaction", "continuity"]
 }
