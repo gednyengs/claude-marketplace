@@ -6,13 +6,10 @@
     "name": "Gedeon Nyengele",
     "email": "7631051+gednyengs@users.noreply.github.com"
   },
-  "metadata": {
-    "pluginRoot": "./plugins"
-  },
   "plugins": [
     {
       "name": "session-handoff",
-      "source": "session-handoff",
+      "source": "./plugins/session-handoff",
       "description": "Save and restore working context across Claude Code sessions and context compaction.",
       "category": "workflow",
       "tags": ["handoff", "session", "context", "resume", "compaction"]
