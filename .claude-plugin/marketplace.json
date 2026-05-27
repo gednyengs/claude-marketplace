@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "sekekama",
+  "description": "Claude Code plugins by Gedeon Nyengele",
+  "owner": {
+    "name": "Gedeon Nyengele",
+    "email": "7631051+gednyengs@users.noreply.github.com"
+  },
+  "metadata": {
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "session-handoff",
+      "source": "session-handoff",
+      "description": "Save and restore working context across Claude Code sessions and context compaction.",
+      "category": "workflow",
+      "tags": ["handoff", "session", "context", "resume", "compaction"]
+    }
+  ]
+}
