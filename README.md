@@ -32,10 +32,10 @@ After installing, run `/reload-plugins` (or restart Claude Code) so the new comp
 
 ## Local development
 
-To work on a plugin in this repo without going through GitHub:
+To work on a plugin in this repo without going through GitHub, point Claude Code at your local clone:
 
 ```
-/plugin marketplace add /Users/nyengele/Documents/sekekama/claude-marketplace
+/plugin marketplace add /absolute/path/to/claude-marketplace
 /plugin install session-handoff@sekekama
 ```
 
