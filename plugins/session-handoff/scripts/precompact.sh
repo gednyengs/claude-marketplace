@@ -15,9 +15,10 @@ if command -v jq >/dev/null 2>&1; then
   [ -n "$t" ] && trigger="$t"
 fi
 
-dir="$(hb_handoff_dir)"
-mkdir -p "$dir" 2>/dev/null
-file="$dir/$(hb_timestamp)-auto.md"
+# Tag the snapshot with this session's id so concurrent sessions never collide
+# and the Stop hook only ever enforces *this* session's own snapshot.
+sid="$(hb_session_short "$input")"
+file="$(hb_new_handoff_path auto "$sid")"
 
 {
   echo "# Handoff — $(hb_iso)"
@@ -41,7 +42,7 @@ file="$dir/$(hb_timestamp)-auto.md"
   echo
   echo "## Resume instructions"
   echo "<!-- TODO: the first concrete actions the next session should take -->"
-} > "$file" 2>/dev/null
+} | hb_atomic_write "$file"
 
 # This text is added to the model's context for the current (pre-compaction) turn.
 cat <<EOF

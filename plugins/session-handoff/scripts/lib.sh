@@ -23,6 +23,144 @@ hb_iso() {
   date +"%Y-%m-%d %H:%M:%S %Z"
 }
 
+# Regex matching the timestamp prefix produced by hb_timestamp (YYYY-MM-DD-HHMMSS).
+HB_TS_RE='[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}'
+
+# --- Session identity -------------------------------------------------------
+# A handoff belongs to the Claude Code session that produced it. We key
+# per-session state on the session id so concurrent sessions in one project
+# don't clobber or contaminate each other.
+
+# Extract a top-level JSON string field by name without jq (best-effort, flat objects).
+#   $1 = payload, $2 = field name. The hook payload is a flat object whose values
+#   here (session_id UUID, transcript path) contain no embedded quotes, so a simple
+#   match is safe as a fallback when jq is absent.
+_hb_json_field() {
+  printf '%s' "${1:-}" | tr '\n' ' ' \
+    | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
+    | head -1 \
+    | sed -E "s/.*:[[:space:]]*\"([^\"]*)\".*/\1/"
+}
+
+# Resolve the current session id.
+#   $1 (optional): the raw hook stdin payload (JSON). Hooks pass this so we can
+#   read the *guaranteed* .session_id field. Slash commands / plain scripts pass
+#   nothing and fall back to the environment.
+# Priority: stdin .session_id -> stdin transcript_path basename
+#           -> $CLAUDE_CODE_SESSION_ID (present but UNDOCUMENTED, best-effort)
+#           -> "nosession" (degraded shared bucket).
+hb_session_id() {
+  local payload="${1:-}" sid="" tp=""
+  if [ -n "$payload" ]; then
+    if command -v jq >/dev/null 2>&1; then
+      sid="$(printf '%s' "$payload" | jq -r '.session_id // empty' 2>/dev/null)"
+      if [ -z "$sid" ]; then
+        tp="$(printf '%s' "$payload" | jq -r '.transcript_path // empty' 2>/dev/null)"
+        [ -n "$tp" ] && sid="$(basename "$tp" .jsonl)"
+      fi
+    fi
+    # No-jq (or jq-miss) fallback: the guaranteed stdin session_id must still win
+    # over the undocumented env var, or concurrency safety regresses without jq.
+    if [ -z "$sid" ]; then
+      sid="$(_hb_json_field "$payload" session_id)"
+      if [ -z "$sid" ]; then
+        tp="$(_hb_json_field "$payload" transcript_path)"
+        [ -n "$tp" ] && sid="$(basename "$tp" .jsonl)"
+      fi
+    fi
+  fi
+  [ -z "$sid" ] && sid="${CLAUDE_CODE_SESSION_ID:-}"
+  [ -z "$sid" ] && sid="nosession"
+  printf '%s' "$sid"
+}
+
+# Filename-safe short form of the session id: up to 12 alphanumeric chars.
+hb_session_short() {
+  hb_session_id "${1:-}" | tr -cd 'a-zA-Z0-9' | cut -c1-12
+}
+
+# True when we could not identify the session (degraded shared bucket).
+hb_session_is_degraded() {
+  [ "${1:-}" = "nosession" ]
+}
+
+# --- Handoff filename conventions ------------------------------------------
+#   manual : <timestamp>-<sid>.md        (portable / team handoff)
+#   auto   : <timestamp>-<sid>-auto.md   (pre-compaction safety snapshot)
+# Pre-upgrade files have no <sid> segment; they are treated as portable.
+
+# All handoff files, oldest first (timestamp prefix makes lexical sort chronological).
+hb_all_handoffs() {
+  local d
+  d="$(hb_handoff_dir)"
+  [ -d "$d" ] || return 0
+  ls -1 "$d"/*.md 2>/dev/null | sort
+}
+
+# Is this basename a session-private auto-snapshot? Requires a real sid segment, so
+# pre-upgrade `<ts>-auto.md` files (no sid) are NOT treated as private — they fall
+# through to the portable/manual bucket and stay visible after upgrading.
+hb_is_auto() {
+  printf '%s' "${1:-}" | grep -Eq "^${HB_TS_RE}-[A-Za-z0-9]+-auto\.md$"
+}
+
+# Is this basename a manual handoff (with or without an embedded sid)?
+hb_is_manual() {
+  printf '%s' "${1:-}" | grep -Eq "^${HB_TS_RE}(-[A-Za-z0-9]+)?\.md$" && ! hb_is_auto "${1:-}"
+}
+
+# Print the session id embedded in a handoff basename, or empty for legacy files.
+hb_handoff_sid() {
+  local core="${1:-}"
+  core="${core%.md}"
+  core="${core%-auto}"
+  printf '%s' "$core" | sed -E "s/^${HB_TS_RE}//; s/^-//"
+}
+
+# Path for a NEW handoff file: mode ($1 = manual|auto), session id ($2).
+hb_new_handoff_path() {
+  local mode="$1" sid="$2" suffix=""
+  [ "$mode" = "auto" ] && suffix="-auto"
+  echo "$(hb_handoff_dir)/$(hb_timestamp)-${sid}${suffix}.md"
+}
+
+# Newest handoff (auto or manual) belonging to session $1. Empty if none.
+hb_latest_for() {
+  local sid="$1" f base
+  hb_all_handoffs | while IFS= read -r f; do
+    base="$(basename "$f")"
+    [ "$(hb_handoff_sid "$base")" = "$sid" ] && echo "$f"
+  done | tail -1
+}
+
+# Newest auto-snapshot belonging to session $1. Empty if none.
+hb_latest_auto_for() {
+  local sid="$1" f base
+  hb_all_handoffs | while IFS= read -r f; do
+    base="$(basename "$f")"
+    hb_is_auto "$base" && [ "$(hb_handoff_sid "$base")" = "$sid" ] && echo "$f"
+  done | tail -1
+}
+
+# All MANUAL handoffs across every session (incl. legacy unsuffixed), oldest first.
+hb_manual_handoffs() {
+  local f base
+  hb_all_handoffs | while IFS= read -r f; do
+    base="$(basename "$f")"
+    hb_is_manual "$base" && echo "$f"
+  done
+}
+
+# Atomically publish stdin to $1 (temp file in the same dir, then mv).
+hb_atomic_write() {
+  local dest="$1" dir tmp
+  dir="$(dirname "$dest")"
+  mkdir -p "$dir" 2>/dev/null
+  tmp="$(mktemp "$dir/.hb.XXXXXX" 2>/dev/null)" || { cat > "$dest"; return; }
+  cat > "$tmp"
+  mv -f "$tmp" "$dest" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; cat > "$dest"; }
+}
+
 # Run git scoped to the project dir, swallowing errors.
 hb_git() {
   git -C "$(hb_project_dir)" "$@" 2>/dev/null
@@ -90,14 +228,6 @@ hb_facts() {
   echo
   hb_detect_commands
   return 0
-}
-
-# Path of the most recent handoff file (sorted by timestamped name). Empty if none.
-hb_latest_handoff() {
-  local d
-  d="$(hb_handoff_dir)"
-  [ -d "$d" ] || return 0
-  ls -1 "$d"/*.md 2>/dev/null | sort | tail -1
 }
 
 # Strip the project-dir prefix for tidy display paths.

@@ -20,10 +20,15 @@ pick up cleanly.
   `go.mod`, Gradle, Maven, and more).
 - **Repo snapshot** — branch, working-tree status, and recent commits.
 
-Handoffs live in `.handoff/<YYYY-MM-DD-HHMMSS>.md` at the project root. They sort
-chronologically, form a readable history, and are designed to be **committed with the
+Handoffs live in `.handoff/<YYYY-MM-DD-HHMMSS>-<session-id>.md` at the project root. They
+sort chronologically, form a readable history, and are designed to be **committed with the
 repo** — great for async and team handoffs. Auto-generated safety snapshots use the
 `-auto.md` suffix.
+
+The session-id tag makes the plugin safe under **multiple concurrent sessions** in one
+project: each session's files are distinct (no collisions), auto-snapshots stay private to
+the session that wrote them, and manual handoffs remain portable for any session or
+teammate to resume. See [Concurrency & session scoping](#concurrency--session-scoping).
 
 ## Commands
 
@@ -54,6 +59,29 @@ Three hooks protect context without you asking:
 
 This means even an unattended session that hits auto-compaction leaves behind a usable
 handoff with real git/environment facts.
+
+## Concurrency & session scoping
+
+Handoff files are keyed on the Claude Code session id, resolved (in order) from the hook
+stdin `session_id`, the transcript-path basename, the `CLAUDE_CODE_SESSION_ID` environment
+variable, or a degraded `nosession` bucket as a last resort. The id is stable across
+context compaction and `--resume`/`--continue`, so a single workstream keeps one identity.
+
+Two handoff kinds are scoped differently:
+
+- **Auto-snapshots** (`-auto.md`, written by PreCompact) are **private** to the session
+  that created them. SessionStart only injects *your own* session's latest, and the Stop
+  hook only ever enforces *your own* unfilled snapshot — so one session's pending
+  compaction can never block or contaminate another's.
+- **Manual handoffs** (`/save`) are **portable**: tagged with the originating session for
+  provenance and collision-avoidance, but resumable by any session or teammate. When a
+  fresh or forked session has no handoff of its own, SessionStart surfaces the newest
+  manual handoff clearly labeled as belonging to another session, and `/resume` lists the
+  available manual handoffs to choose from rather than silently adopting one.
+
+**Known limitation:** the git working-tree snapshot is shared across sessions, so a handoff
+saved while another session has uncommitted edits in the same tree can misattribute those
+changes. Use separate git worktrees if that matters for your workflow.
 
 ## Install
 

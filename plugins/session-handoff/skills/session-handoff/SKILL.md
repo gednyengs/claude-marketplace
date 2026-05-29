@@ -14,8 +14,11 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 
 This skill preserves the "necessary and sufficient" context to resume work later — in a
 new session, by a teammate, or after context compaction. Handoffs are markdown files in a
-`.handoff/` directory at the project root, named `YYYY-MM-DD-HHMMSS.md` so they sort
-chronologically and form a history. They are meant to be committed with the repo.
+`.handoff/` directory at the project root, named `YYYY-MM-DD-HHMMSS-<sessionid>.md` so they
+sort chronologically, form a history, and never collide between concurrent sessions in the
+same project. Pre-compaction safety snapshots use a `-auto.md` suffix. Manual handoffs are
+portable and meant to be committed with the repo; a teammate or new session can resume any
+of them. Auto-snapshots are private to the session that created them.
 
 There are two equivalent entry points: the `/session-handoff:save` and
 `/session-handoff:resume` slash commands, and this skill for when the user asks in natural
@@ -27,8 +30,11 @@ language. The behavior is the same.
    `"${CLAUDE_PLUGIN_ROOT}"/scripts/snapshot.sh`
    It prints the git branch, working-tree status, recent commits, and detected
    build/test/run commands. Use this as factual ground truth.
-2. Ensure `.handoff/` exists at the project root.
-3. Write `.handoff/<YYYY-MM-DD-HHMMSS>.md` using the structure in
+2. Get the exact target path (already session-tagged, with `.handoff/` created) by running:
+   `"${CLAUDE_PLUGIN_ROOT}"/scripts/new-path.sh`
+   Write to that exact path — do not invent a filename, since the session tag prevents
+   collisions with other concurrent sessions.
+3. Write the file using the structure in
    `templates/HANDOFF_TEMPLATE.md` (read it once for the exact headings). Fill every
    section from the conversation:
    - **Task & progress** — goal; done; in progress; not started.
@@ -44,11 +50,16 @@ language. The behavior is the same.
 
 ## Resuming from a handoff
 
-1. Read the most recent handoff:
-   `"${CLAUDE_PLUGIN_ROOT}"/scripts/resume.sh` (prints the newest `.handoff/*.md` in full).
-2. Verify the repo snapshot still matches reality (`git status`, current branch); note drift.
-3. Recap the task, where it stopped, blockers, and proposed next steps. Ask before making
-   changes unless the user clearly wants you to continue automatically.
+1. Read the relevant handoff:
+   `"${CLAUDE_PLUGIN_ROOT}"/scripts/resume.sh`. It prints this session's own latest
+   handoff when one exists (labeled `(this session)`); otherwise it lists the portable
+   manual handoffs from other sessions and shows the newest (labeled accordingly).
+2. If the handoff is from **another session**, do not assume it describes the current
+   task — summarize it and confirm with the user (or take a specific path) before acting.
+3. Verify the repo snapshot still matches reality (`git status`, current branch); note drift.
+4. Recap the task, where it stopped, blockers, and proposed next steps. Ask before making
+   changes unless the user clearly wants you to continue automatically with this session's
+   own handoff.
 
 ## Automatic safety net (hooks)
 

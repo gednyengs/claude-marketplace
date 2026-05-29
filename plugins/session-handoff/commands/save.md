@@ -12,15 +12,18 @@ Deterministic project snapshot (gathered for you just now):
 
 !`"${CLAUDE_PLUGIN_ROOT}"/scripts/snapshot.sh`
 
+Write the handoff to **exactly** this path (it is tagged with the current session id
+so concurrent sessions in the same project never collide):
+
+!`"${CLAUDE_PLUGIN_ROOT}"/scripts/new-path.sh`
+
 Optional note for this checkpoint: $ARGUMENTS
 
 Now do the following:
 
-1. Determine the project root and ensure a `.handoff/` directory exists there
-   (create it if missing).
-2. Choose a filename `.handoff/<YYYY-MM-DD-HHMMSS>.md` using the current local time
-   (sortable; newest sorts last).
-3. Write the file with **exactly** these sections, filled from THIS conversation.
+1. Use the exact path printed above (the `.handoff/` directory is already created for
+   you). Do not invent your own filename — the session tag matters.
+2. Write the file with **exactly** these sections, filled from THIS conversation.
    Be concise but sufficient — favor specifics (paths, names, command lines, decisions)
    over generalities:
 
@@ -37,8 +40,8 @@ Now do the following:
      snapshot above.
    - `## Resume instructions` — the first few concrete actions the next session should take.
 
-4. Do **not** write secrets, tokens, or credentials into the handoff.
-5. After writing, print the relative path and a 3–5 bullet summary of what you captured.
+3. Do **not** write secrets, tokens, or credentials into the handoff.
+4. After writing, print the relative path and a 3–5 bullet summary of what you captured.
 
 This handoff is meant to be committed with the repo, so write it for your future self
 and your teammates.
