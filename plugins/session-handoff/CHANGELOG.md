@@ -3,6 +3,27 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [1.2.0] — 2026-05-28
+
+### Fixed
+- `save` → `/clear` → `resume` no longer reports the just-saved handoff as "from another
+  session." `/clear` starts a new session id, so the handoff (tagged with the pre-clear
+  session) was treated as foreign. `/resume` is now permissive for this explicit flow.
+
+### Changed
+- `/session-handoff:resume` resolves the no-own-handoff case by candidate count: zero →
+  the usual "no handoff" message; exactly one → load it directly (the common post-`/clear`
+  case), presented as a valid portable handoff; two or more → a numbered picker of up to 5
+  recent manual handoffs (newest first, deduped to the latest per session, each with a
+  one-line task summary) to choose from. `--auto` loads the newest manual handoff.
+- SessionStart wording softened; on `source: "clear"` it points to `/resume` to pick up
+  the most recent checkpoint. SessionStart stays conservative (passive injection of this
+  session's own handoff only); the permissiveness is limited to the explicit `/resume`.
+
+### Added
+- `hb_recent_manual`, `hb_handoff_summary`, and `hb_handoff_when` helpers in `lib.sh`
+  (portable; no bash-4 associative arrays).
+
 ## [1.1.0] — 2026-05-28
 
 ### Added

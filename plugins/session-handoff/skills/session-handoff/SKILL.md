@@ -50,24 +50,27 @@ language. The behavior is the same.
 
 ## Resuming from a handoff
 
-1. Read the relevant handoff:
-   `"${CLAUDE_PLUGIN_ROOT}"/scripts/resume.sh`. It prints this session's own latest
-   handoff when one exists (labeled `(this session)`); otherwise it lists the portable
-   manual handoffs from other sessions and shows the newest (labeled accordingly).
-2. If the handoff is from **another session**, do not assume it describes the current
-   task — summarize it and confirm with the user (or take a specific path) before acting.
-3. Verify the repo snapshot still matches reality (`git status`, current branch); note drift.
-4. Recap the task, where it stopped, blockers, and proposed next steps. Ask before making
-   changes unless the user clearly wants you to continue automatically with this session's
-   own handoff.
+1. Run `"${CLAUDE_PLUGIN_ROOT}"/scripts/resume.sh`. Its output is one of three shapes:
+   - **A handoff was loaded** (starts with `Source:`): this session's own handoff, or —
+     after `/clear` or in a new session — the single recent portable handoff. Either is
+     valid to resume; do not treat it as suspicious.
+   - **A picker** (starts with `PICK:` and a numbered list): the session has no handoff of
+     its own and several exist. Present the list and ask which number to resume (or, when
+     continuing automatically, take entry 1, the newest), then read that file.
+   - **No handoff found**: tell the user and offer `/session-handoff:save`.
+2. Verify the repo snapshot still matches reality (`git status`, current branch); note drift.
+3. Recap the task, where it stopped, blockers, and proposed next steps. Ask before making
+   changes unless the user clearly wants you to continue automatically.
 
 ## Automatic safety net (hooks)
 
 The plugin also protects context without being asked:
 - **PreCompact** writes a deterministic safety snapshot (with TODO placeholders) before the
   context window is compacted, and asks you to enrich it while you still have full context.
-- **SessionStart** injects the most recent handoff so a new or post-compaction session knows
-  where things stood.
+- **SessionStart** injects *this session's own* latest handoff so a resumed or
+  post-compaction session knows where it stood. If the session has none (fresh, forked, or
+  just-cleared), it only points to `/session-handoff:resume` — it never injects another
+  session's content.
 - **Stop** nudges you (at most twice) to finish filling an auto-snapshot's placeholders.
 
 When you see a PreCompact or Stop directive about an unfilled auto-snapshot, open the named

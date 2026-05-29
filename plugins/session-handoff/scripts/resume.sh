@@ -18,21 +18,41 @@ if [ -n "${own:-}" ] && [ -f "${own:-}" ]; then
   exit 0
 fi
 
-# Otherwise offer the portable manual handoffs from other sessions to choose from.
-manual="$(hb_manual_handoffs)"
-if [ -z "${manual:-}" ]; then
+# No handoff tagged for this session (post-/clear, fresh, forked, concurrent, or a
+# teammate's clone). Choose from the portable manual handoffs. /resume is explicit
+# user intent, so these are valid to load — we just disambiguate when there's more
+# than one candidate.
+total="$(hb_recent_manual 9999 | grep -c .)"
+
+if [ "$total" -eq 0 ]; then
   echo "_No handoff found in $(hb_rel "$(hb_handoff_dir)"). Run /session-handoff:save to create one._"
   exit 0
 fi
 
-echo "_No handoff for this session yet. Manual handoffs from other sessions (newest last):_"
+if [ "$total" -eq 1 ]; then
+  # Exactly one checkpoint — just load it (this is the common save -> /clear -> resume case).
+  only="$(hb_recent_manual 1)"
+  tag="$(hb_handoff_sid "$(basename "$only")")"; tag="${tag:-legacy}"
+  echo "Source: $(hb_rel "$only") (portable handoff; saved in session ${tag})"
+  echo
+  cat "$only"
+  exit 0
+fi
+
+# Two or more candidates: present a picker and do NOT load anything yet.
+echo "PICK: no handoff is tagged for this session. Recent handoffs to resume (newest first):"
 echo
-echo "$manual" | while IFS= read -r f; do echo "- $(hb_rel "$f")"; done
+i=0
+hb_recent_manual 5 | while IFS= read -r f; do
+  i=$((i + 1))
+  base="$(basename "$f")"
+  tag="$(hb_handoff_sid "$base")"; tag="${tag:-legacy}"
+  when="$(hb_handoff_when "$base")"; [ -n "$when" ] || when="unknown time"
+  summ="$(hb_handoff_summary "$f")"; [ -n "$summ" ] || summ="(no task summary)"
+  echo "$i. [$when · session $tag] $summ"
+  echo "     $(hb_rel "$f")"
+done
+[ "$total" -gt 5 ] && { echo; echo "_(showing 5 of $total — ask to resume a specific path for an older one)_"; }
 echo
-newest="$(echo "$manual" | tail -1)"
-echo "_Showing the newest below; ask to resume a specific path to load a different one._"
-echo
-echo "Source: $(hb_rel "$newest") (another session — verify it matches your task)"
-echo
-cat "$newest"
+echo "_Reply with a number to load that handoff. Under --auto, entry 1 (newest) is loaded automatically._"
 exit 0

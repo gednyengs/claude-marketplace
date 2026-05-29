@@ -40,9 +40,13 @@ conversation. Add an optional note to label the checkpoint.
 
 ### `/session-handoff:resume [--auto]`
 
-Load the most recent handoff. By default it recaps the task, verifies the repo snapshot
-still matches reality, and asks how to proceed. Pass `--auto` to start executing the
-recorded next steps immediately.
+Load a handoff and prepare to continue. If this session already has its own handoff (or
+there's exactly one recent checkpoint — the usual case after `/save` then `/clear`), it
+loads that directly. If several recent handoffs exist across sessions, it shows a short
+picker (up to 5, newest first, with a one-line summary each) and asks which to resume.
+By default it then recaps the task, verifies the repo snapshot still matches reality, and
+asks how to proceed. Pass `--auto` to skip straight to executing the recorded next steps
+(auto-selecting the newest when a picker would otherwise be shown).
 
 You can also just ask in plain language ("save a handoff", "where did we leave off?") —
 the bundled **session-handoff skill** triggers the same workflow.
@@ -53,7 +57,7 @@ Three hooks protect context without you asking:
 
 | Hook | Event | What it does |
 | --- | --- | --- |
-| `session-start.sh` | **SessionStart** | Injects the most recent handoff so a new or post-compaction session knows where things stood (output capped to keep token cost low). |
+| `session-start.sh` | **SessionStart** | Injects **this session's own** latest handoff so a resumed or post-compaction session knows where it stood (output capped). If the session has none, it shows only a pointer to `/session-handoff:resume` — no other session's content is injected. |
 | `precompact.sh` | **PreCompact** | Writes a deterministic safety snapshot before compaction and asks Claude to enrich it while it still has full context. |
 | `enforce.sh` | **Stop** | If the latest auto-snapshot still has `<!-- TODO -->` placeholders, nudges Claude (at most twice) to finish it, then gets out of the way. |
 
@@ -66,6 +70,9 @@ Handoff files are keyed on the Claude Code session id, resolved (in order) from 
 stdin `session_id`, the transcript-path basename, the `CLAUDE_CODE_SESSION_ID` environment
 variable, or a degraded `nosession` bucket as a last resort. The id is stable across
 context compaction and `--resume`/`--continue`, so a single workstream keeps one identity.
+Note that `/clear` starts a **new** session id — `/resume` bridges this (see below) by
+offering your recent portable handoffs to pick from, so a save → `/clear` → resume flow
+still continues cleanly.
 
 Two handoff kinds are scoped differently:
 
@@ -75,9 +82,10 @@ Two handoff kinds are scoped differently:
   compaction can never block or contaminate another's.
 - **Manual handoffs** (`/save`) are **portable**: tagged with the originating session for
   provenance and collision-avoidance, but resumable by any session or teammate. When a
-  fresh or forked session has no handoff of its own, SessionStart surfaces the newest
-  manual handoff clearly labeled as belonging to another session, and `/resume` lists the
-  available manual handoffs to choose from rather than silently adopting one.
+  fresh, forked, or just-cleared session has no handoff of its own, SessionStart only
+  points to `/resume` (it never injects another session's content). `/resume` itself is
+  permissive: it loads the single recent handoff directly, or — when several exist across
+  sessions — shows a short picker to choose from rather than silently adopting one.
 
 **Known limitation:** the git working-tree snapshot is shared across sessions, so a handoff
 saved while another session has uncommitted edits in the same tree can misattribute those

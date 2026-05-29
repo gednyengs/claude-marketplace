@@ -6,9 +6,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-# Capture the hook payload so we can read the guaranteed session id.
+# Capture the hook payload so we can read the guaranteed session id and start source.
 input="$(cat 2>/dev/null)"
 sid="$(hb_session_short "$input")"
+
+# Start source: "startup" | "resume" | "clear" | "compact" (best-effort).
+src=""
+if command -v jq >/dev/null 2>&1; then
+  src="$(printf '%s' "$input" | jq -r '.source // empty' 2>/dev/null)"
+fi
+[ -n "$src" ] || src="$(_hb_json_field "$input" source)"
 
 # Prefer this session's own latest handoff (auto or manual). This is what makes
 # a post-compaction or resumed session pick up exactly where it left off. Skip this
@@ -27,14 +34,18 @@ if [ -n "${own:-}" ] && [ -f "${own:-}" ]; then
   exit 0
 fi
 
-# No handoff for this session yet (fresh, forked, or a teammate's clone). Surface
-# the newest *manual* handoff as an FYI — but never imply it describes this task.
+# No handoff for this session yet (fresh, forked, teammate's clone — or a just-cleared
+# session, which gets a new session id). Point to /resume rather than injecting content:
+# passively adopting the newest manual handoff could be the wrong workstream. /resume is
+# permissive and lets the user pick. Path-only — no foreign content enters this context.
 other="$(hb_manual_handoffs | tail -1)"
 if [ -n "${other:-}" ] && [ -f "${other:-}" ]; then
-  echo "=== session-handoff: a handoff from another session exists ($(hb_rel "$other")) ==="
-  echo "=== Review it — do NOT assume it describes your task. Run /session-handoff:resume to load it. ==="
-  echo
-  head -c 2000 "$other"
-  echo
+  if [ "$src" = "clear" ]; then
+    echo "=== session-handoff: context was cleared. Recent checkpoints exist (most recent: $(hb_rel "$other")). ==="
+    echo "=== Run /session-handoff:resume to pick one up. ==="
+  else
+    echo "=== session-handoff: a recent handoff exists (most recent: $(hb_rel "$other")). ==="
+    echo "=== Run /session-handoff:resume to review and choose one (it may be from another session). ==="
+  fi
 fi
 exit 0

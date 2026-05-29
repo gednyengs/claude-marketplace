@@ -151,6 +151,51 @@ hb_manual_handoffs() {
   done
 }
 
+# Up to $1 (default 5) most recent MANUAL handoffs, newest first, deduped to the
+# latest per session (legacy/untagged files share a single "legacy" bucket).
+# Avoids bash-4 associative arrays for portability (macOS ships bash 3.2).
+hb_recent_manual() {
+  local limit="${1:-5}"
+  hb_manual_handoffs | sort -r | {
+    seen=" " count=0
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      key="$(hb_handoff_sid "$(basename "$f")")"; key="${key:-legacy}"
+      case "$seen" in *" $key "*) continue ;; esac
+      seen="$seen$key "
+      echo "$f"
+      count=$((count + 1))
+      [ "$count" -ge "$limit" ] && break
+    done
+  }
+}
+
+# Reformat a handoff basename's timestamp prefix to "YYYY-MM-DD HH:MM". Empty if it
+# doesn't match the expected stamp.
+hb_handoff_when() {
+  printf '%s' "${1:-}" | sed -nE "s/^([0-9]{4}-[0-9]{2}-[0-9]{2})-([0-9]{2})([0-9]{2})[0-9]{2}.*/\1 \2:\3/p"
+}
+
+# One-line task summary from a handoff file: the first non-empty, non-comment,
+# non-heading line inside the "## Task & progress" section, lightly de-marked and
+# capped. Empty if the section is missing/empty (caller falls back to the path).
+hb_handoff_summary() {
+  local f="${1:-}"
+  [ -f "$f" ] || return 0
+  awk '
+    /^##[[:space:]]+Task & progress[[:space:]]*$/ { insec=1; next }
+    insec && /^##[[:space:]]/ { exit }
+    insec {
+      if ($0 ~ /^[[:space:]]*$/) next
+      if ($0 ~ /^[[:space:]]*<!--/) next
+      if ($0 ~ /^[[:space:]]*#/) next
+      print; exit
+    }
+  ' "$f" 2>/dev/null \
+    | sed -E 's/^[[:space:]]*([-*+]|[0-9]+\.)[[:space:]]+//; s/^[[:space:]]*\[[ xX]\][[:space:]]*//; s/\*\*//g; s/^[[:space:]]+//; s/[[:space:]]+$//' \
+    | cut -c1-100
+}
+
 # Atomically publish stdin to $1 (temp file in the same dir, then mv).
 hb_atomic_write() {
   local dest="$1" dir tmp

@@ -10,23 +10,26 @@ Most recent handoff:
 
 !`"${CLAUDE_PLUGIN_ROOT}"/scripts/resume.sh`
 
-Then:
+The script output is in one of three shapes. Determine which, then act:
 
-- Treat the handoff above as the source of truth for where work stopped.
-- Note **whose** handoff it is. The script labels it either `(this session)` or
-  `(another session — verify it matches your task)`:
-  - If it is **this session's**, proceed normally per the mode below.
-  - If it is **another session's** (or the script listed several to choose from),
-    do **not** assume it describes your current task. Give a brief summary, point out
-    it came from a different session, and **ask the user to confirm** it's the right
-    one (or to name a specific path) before doing anything — even under `--auto`.
-- Verify the **Repo snapshot** still matches reality: run `git status` and check the
-  current branch. Note any drift (new commits, uncommitted changes, branch switch).
-- Mode (applies once the correct handoff is confirmed):
-  - If the arguments include `--auto` (arguments: `$ARGUMENTS`) **and** the handoff is
-    this session's own: give a one-paragraph recap, then begin executing the
-    **Next steps** in order, starting with the first actionable item.
-  - Otherwise: give a short recap (the task, where it stopped, blockers, and the
-    proposed next steps) and **ask how to proceed** before changing anything.
-- If the snapshot says no handoff exists, tell the user and offer to create one with
-  `/session-handoff:save`.
+**A. A handoff was loaded** (output starts with `Source:` followed by the handoff
+markdown). This is either this session's own handoff `(this session)` or, after a
+`/clear` / new session, the single portable handoff `(saved in session …)`. Either is
+valid to resume — do **not** treat it as suspicious.
+- Verify the **Repo snapshot** still matches reality: run `git status`, check the
+  current branch, and note any drift (new commits, uncommitted changes, branch switch).
+- If the arguments include `--auto` (arguments: `$ARGUMENTS`): give a one-paragraph
+  recap, then begin executing the **Next steps** in order from the first actionable item.
+- Otherwise: give a short recap (task, where it stopped, blockers, proposed next steps)
+  and **ask how to proceed** before changing anything.
+
+**B. A picker was printed** (output starts with `PICK:` and a numbered list of recent
+handoffs). The session has no handoff of its own and there are several to choose from.
+- If `--auto`: read the file path shown under **entry 1** (the newest), then proceed as
+  in case A's `--auto` branch using that handoff.
+- Otherwise: present the numbered list to the user (time · session · summary) and **ask
+  which number to resume**. Then read that entry's file path and recap it as in case A.
+- Do not execute any next steps until a handoff is chosen.
+
+**C. No handoff exists** (output says none was found). Tell the user and offer to create
+one with `/session-handoff:save`.
