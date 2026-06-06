@@ -30,6 +30,7 @@ Apply these definitions exactly:
 - **Resolve `<feature>`** by exact folder-name match under `.claude/specs/` only. No exact match → list candidates and stop. Multiple partial matches → stop and ask. Never guess.
 - **Latest** artifact of a type = highest `created` among those whose `status` ≠ `superseded`. Tie → lexicographically greatest filename. Still ambiguous → stop and ask the user to name it.
 - **`stale: true` ⇒ the artifact cannot be `ready`.** An artifact is stale when its `source` is not the latest non-superseded artifact (of the source's type) for the feature.
+- **Provenance** — every surface, decision, and formal contract in the GRILL is tagged `code-confirmed`, `spec-derived`, `design-intended`, or `assumed`. A task whose acceptance rests on an `assumed`-provenance source inherits that risk; surface it under the task's risks.
 - Only the artifact currently being written may be `draft` or `ready`; an older artifact may be set `superseded` only when explicitly replaced.
 
 ---
@@ -38,19 +39,20 @@ Apply these definitions exactly:
 
 ## Process
 
-1. **Build the input bundle.** Assemble: the full PRD; the GRILL contract/decision sections (`C##`/`D##`) the PRD references; the PRD's Assumptions and (if any) Missing Decisions; and the list of all requirement/invariant/contract IDs (`R##`/`I##`/`C##`). Every blocking item must either map to the tasks it blocks or prevent a `ready` PLAN. This bundle — not the live conversation — is the planning input.
+1. **Build the input bundle.** Assemble: the full PRD; the GRILL contract/decision sections (`C##`/`D##`) the PRD references; the GRILL **Surface Inventory** (`S##`, with provenance); the PRD's Assumptions and (if any) Missing Decisions; and the list of all requirement/invariant/contract/surface IDs (`R##`/`I##`/`C##`/`S##`). Every blocking item must either map to the tasks it blocks or prevent a `ready` PLAN. This bundle — not the live conversation — is the planning input.
 
 2. **Generate via the Plan architect.** Spawn the `Plan` subagent (read-only architect that explores the repo) with the input bundle. Require it to return:
    - component decomposition and a dependency DAG;
    - build order as **vertical-slice milestones** — the first milestone must exercise the full externally-meaningful path for the smallest valid input;
-   - ordered tasks `T##`, each with: scope, depends-on, acceptance criteria that **cite the source IDs** they satisfy (`R##`/`I##`/`C##`), test seam & method, rough size, and risks;
+   - ordered tasks `T##`, each with: scope, depends-on, acceptance criteria that **cite the source IDs** they satisfy (`R##`/`I##`/`C##`, and the `S##` surface they realize where one applies), test seam & method, rough size, and risks;
+   - coverage of every GRILL surface (`S##`): each one marked covered by a `D##`/`C##` maps to ≥1 task or is explicitly recorded out of scope; negative-space surfaces (`considered — no decision`/`considered — N/A`) are carried as-is, never turned into tasks;
    - cross-cutting workstreams (e.g. diagnostics, error handling, test harness, build/toolchain) as the work demands;
    - open risks.
 
    **Ban invented contracts:** any formal rule the plan relies on must cite a GRILL/PRD ID. If it isn't in the sources, the plan records it as an open risk — never as a task basis.
 
 3. **Review loop with Codex (max 2 rounds).** Send the draft PLAN plus the full input bundle from step 1 (including the GRILL `C##` contracts) to Codex via the `codex-runner` skill with this rubric:
-   - (a) **coverage** — every `R##`/`I##`/`C##` maps to ≥1 task;
+   - (a) **coverage** — every `R##`/`I##`/`C##` maps to ≥1 task, and every GRILL `S##` marked covered by a `D##`/`C##` maps to ≥1 task or is explicitly out of scope (negative-space `S##` excepted);
    - (b) **ordering** — no task depends on later work; prerequisites present;
    - (c) **granularity** — each task is independently implementable and testable;
    - (d) **missing cross-cutting work**;
@@ -90,7 +92,7 @@ Work that spans tasks (e.g. diagnostics, error handling, test harness, build/too
 
 ## Traceability
 
-A table mapping every `R##`/`I##`/`C##` to the task(s) that satisfy it. This is the coverage guarantee — every requirement, invariant, and contract must appear.
+A table mapping every `R##`/`I##`/`C##` (and every GRILL `S##` marked covered by a `D##`/`C##`) to the task(s) that satisfy it. This is the coverage guarantee — every requirement, invariant, contract, and decision-covered surface must appear or be explicitly out of scope; negative-space surfaces (`considered — no decision` / `considered — N/A`) are listed as such.
 
 ## Risks & Assumptions
 

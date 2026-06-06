@@ -7,7 +7,11 @@ Three skills form a pipeline:
 
 1. **`grill-me`** — interrogates your plan or design one decision at a time, challenging
    vague answers and stress-testing each choice, until an LLM agent could implement it with
-   no further questions. Writes a **GRILL** decision record (full formal contracts,
+   no further questions. It inventories every surface the work touches, derives the decision
+   tree from that, then hardens coverage with a lens-based recall sweep, an assumption audit,
+   and a consistency pass. Works greenfield (no codebase required) — every surface and decision
+   is tagged with its **provenance** (`code-confirmed` / `spec-derived` / `design-intended` /
+   `assumed`). Writes a **GRILL** decision record (surface inventory, full formal contracts,
    rationale, rejected alternatives, confidence).
 2. **`to-prd`** — synthesizes a **PRD** from the GRILL. It never interviews and never invents
    a decision; it fails closed, refusing to mark a PRD ready while decisions are open.
@@ -20,14 +24,14 @@ Every run writes an append-only, timestamped file under `.claude/specs/<feature>
 
 ```
 .claude/specs/<feature>/
-  GRILL-<timestamp>.md   decisions + full formal contracts (the source of truth)
+  GRILL-<timestamp>.md   surface inventory + decisions + full formal contracts (source of truth)
   PRD-<timestamp>.md     behavioral spec; references GRILL contracts by id
   PLAN-<timestamp>.md    tasks, each citing the requirement/contract it satisfies
 ```
 
 Files are linked by frontmatter (`source`, `supersedes`) and carry a machine-checkable
 `status` (`draft | ready | superseded`). Downstream stages gate on the whole chain and refuse
-to advance on an unresolved or stale source. Stable IDs (`D##`/`C##` → `R##`/`I##` → `T##`)
+to advance on an unresolved or stale source. Stable IDs (`S##`/`D##`/`C##` → `R##`/`I##` → `T##`)
 give end-to-end traceability from any task back to the decision that justifies it.
 
 ## Usage
@@ -45,8 +49,10 @@ give end-to-end traceability from any task back to the decision that justifies i
 
 ## Design notes
 
-- **General-purpose.** The skills name zero domain categories; the decision tree is derived
-  from your specific plan and codebase, so they work equally on a compiler, a web app, or a CLI.
+- **General-purpose, greenfield-ready.** The skills name zero domain categories; the decision
+  tree is derived from your specific plan and its grounding — existing code, an external spec, or
+  first principles when there is no codebase yet — so they work equally on a compiler, a web app,
+  or a CLI, brownfield or from scratch.
 - **Fail closed everywhere.** A blocking open decision in the GRILL propagates to a `draft`
   PRD and halts `to-plan` — nothing builds a plan on an unresolved design.
 

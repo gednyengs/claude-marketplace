@@ -30,6 +30,7 @@ Apply these definitions exactly:
 - **Resolve `<feature>`** by exact folder-name match under `.claude/specs/` only. No exact match → list candidates and stop. Multiple partial matches → stop and ask. Never guess.
 - **Latest** artifact of a type = highest `created` among those whose `status` ≠ `superseded`. Tie → lexicographically greatest filename. Still ambiguous → stop and ask the user to name it.
 - **`stale: true` ⇒ the artifact cannot be `ready`.** An artifact is stale when its `source` is not the latest non-superseded artifact (of the source's type) for the feature.
+- **Provenance** — every surface, decision, and formal contract in the GRILL is tagged with where its truth comes from: `code-confirmed`, `spec-derived`, `design-intended`, or `assumed`. Carry these tags through; never upgrade a GRILL `assumed` into a settled PRD requirement.
 - Only the artifact currently being written may be `draft` or `ready`; an older artifact may be set `superseded` only when explicitly replaced.
 
 ---
@@ -42,7 +43,7 @@ Apply these definitions exactly:
 
 1. Explore the repo if you haven't already. Use the project's domain glossary throughout; respect any ADRs in the area you're touching; flag a decision worth a new ADR only if the project already uses ADRs.
 
-2. Synthesize the template below. Assign stable IDs: requirements `R##`, invariants `I##`. For exact formal contracts, **do not restate them in prose — reference the GRILL contract by ID** (e.g. "Grammar: see GRILL `C03`"). Keep the PRD a clean behavioral summary; the GRILL holds the authoritative detail.
+2. Synthesize the template below. Assign stable IDs: requirements `R##`, invariants `I##`. For exact formal contracts, **do not restate them in prose — reference the GRILL contract by ID** (e.g. "Grammar: see GRILL `C03`"). Keep the PRD a clean behavioral summary; the GRILL holds the authoritative detail. Account for every surface in the GRILL **Surface Inventory** (`S##`): each one the GRILL marks covered by a `D##`/`C##` must be reflected here — as a requirement, invariant, contract reference, or implementation decision — or appear under **Out of Scope**; never silently dropped. Surfaces the GRILL marks `considered — no decision`/`considered — N/A` are negative-space: preserve them as such and never invent a requirement from them. Carry each decision's GRILL **provenance** through, so requirements resting on `assumed` decisions are visibly the least settled.
 
 3. Confirm the testing seams from the GRILL's context block — do not ask the user. If seams were never resolved, treat that as a blocking Missing Decision (fail closed).
 
@@ -68,7 +69,7 @@ The actor need not be human — it may be a calling subsystem, a userspace proce
 
 R0N. Given <context>, when <event or call>, the component must <guarantee>.
 
-Cover all observable behavior, but do not pad into fake prose.
+Cover all observable behavior — including every GRILL Surface Inventory surface (`S##`) that carries a decision — but do not pad into fake prose.
 
 ## Invariants & Contracts
 
@@ -84,7 +85,7 @@ How the feature behaves when things go wrong: anticipated failures, how they pro
 
 ## Conformance
 
-If the work must conform to a governing specification (a standard, a published contract, an external format), name it and record intended deviations. Omit if none applies.
+If the work must conform to a governing specification (a standard, a published contract, an external format), name it and record intended deviations; name any GRILL decision or contract tagged provenance `spec-derived` and the spec it derives from. Omit if none applies.
 
 ## Testing Decisions
 
@@ -92,7 +93,7 @@ What makes a good test (test external behavior, not implementation details); the
 
 ## Assumptions
 
-Decisions that were assumed rather than confirmed, taken from the GRILL, each flagged `blocking: true|false`. An implementing agent should treat these as the items most likely to be wrong.
+Decisions the GRILL tagged provenance `assumed` (assumed rather than confirmed), each flagged `blocking: true|false`. An implementing agent should treat these as the items most likely to be wrong.
 
 ## Out of Scope
 
