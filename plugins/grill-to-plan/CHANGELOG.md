@@ -3,6 +3,18 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [1.3.0] — 2026-06-07
+
+### Changed
+- `to-plan`: simplified and decoupled the reviewer model. Review runs through an in-model
+  `general-purpose` subagent by default (no external egress); an external reviewer runs only when
+  the caller supplies a **reviewer instruction** — as a run argument or a standing preference (e.g.
+  in `CLAUDE.md`) — which is itself the consent to send content externally. This removes the
+  interactive consent prompt and **all hard-coded references to any specific external tool**, so
+  the plugin no longer names a private dependency (`codex-runner` is now only an optional README
+  example). An external reviewer falls back to the subagent on failure, the reviewer is locked for
+  both rounds, and the plan records `reviewed_by`. Supersedes the 1.2.0 consent-prompt approach.
+
 ## [1.2.0] — 2026-06-07
 
 ### Changed

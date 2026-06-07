@@ -17,8 +17,8 @@ Three skills form a pipeline:
    a decision; it fails closed, refusing to mark a PRD ready while decisions are open.
 3. **`to-plan`** — turns the PRD into a dependency-ordered **PLAN** of implementation tasks.
    A read-only Plan architect subagent drafts it; a bounded independent review loop hardens it — an
-   in-model subagent by default, or an external cross-model Codex review (via `codex-runner`) when
-   the user opts in.
+   in-model subagent by default, or an external reviewer you supply via a reviewer instruction (for
+   a cross-model review).
 
 ## The artifact chain
 
@@ -44,13 +44,17 @@ give end-to-end traceability from any task back to the decision that justifies i
 
 ## Requirements
 
-- **`to-plan` reviews the plan with an in-model subagent by default**, so nothing leaves your
-  environment unless you ask. If the `codex-runner` skill (and `codex` CLI) is available, it can
-  instead run an external cross-model review with Codex — but only with your consent: when Codex is
-  available and the session is interactive, `to-plan` asks which reviewer to use, and falls back to
-  the subagent otherwise (absent, non-interactive, or declined). The plan records
-  `reviewed_by: codex | subagent` so a `ready` plan reflects which review it got. No skill has a
-  hard external dependency; `grill-me` and `to-prd` use none.
+- **`to-plan` reviews the plan with an in-model subagent by default** — nothing leaves your
+  environment. To get an *external* (e.g. cross-model) review instead, supply a **reviewer
+  instruction**, either as an argument to the run or as a standing preference in your project's
+  `CLAUDE.md`. Supplying such an instruction is what sends your PRD, GRILL contracts, and draft
+  plan to that external service; an external reviewer falls back to the subagent if it's
+  unavailable, and the plan records `reviewed_by` so a `ready` plan reflects which review it got.
+  No skill has a hard external dependency; `grill-me` and `to-prd` use none.
+  - *Optional example (external review via a separate Codex runner):* if you have installed a
+    `codex-runner` skill and the `codex` CLI, your reviewer instruction can be
+    `review via the codex-runner skill`. The plugin does **not** ship `codex-runner` — it's an
+    optional, separately-installed integration, and the plugin works fully without it.
 
 ## Design notes
 
