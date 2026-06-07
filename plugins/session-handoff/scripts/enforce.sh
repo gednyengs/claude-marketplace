@@ -1,60 +1,41 @@
 #!/usr/bin/env bash
-# Stop hook: makes the auto-snapshot actually get filled in.
-# If the newest handoff is an unfilled AUTO snapshot (still has TODO markers),
-# block the stop once or twice and ask Claude to complete it. Silent in all
-# other cases. Capped via a counter in the plugin data dir to avoid loops.
+# Stop hook (see docs/V2-SPEC.md §8.4). If THIS session's own latest auto-snapshot
+# still has unfilled "<!-- TODO -->" placeholders, block the stop and ask the model
+# to finish it — capped at 2 nudges via a per-session counter. Silent otherwise.
+# jq is NOT required: the decision JSON is emitted directly.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-input="$(cat 2>/dev/null)"  # capture hook payload for the session id
-
-# Enforcement needs jq to emit a structured decision; degrade silently without it.
-command -v jq >/dev/null 2>&1 || exit 0
-
+input="$(cat 2>/dev/null)"
 sid="$(hb_session_short "$input")"
-# Never trap a session we can't identify — its counter/snapshot would be shared.
 hb_session_is_degraded "$sid" && exit 0
 
-# Only ever consider *this* session's own auto-snapshot, so one session's
-# pending compaction can never block an unrelated session's stop.
-latest="$(hb_latest_auto_for "$sid")"
-[ -n "${latest:-}" ] || exit 0
-[ -f "${latest:-}" ] || exit 0
+# Only ever consider THIS session's own auto-snapshot.
+latest="$(hb_latest_auto_for_session "$sid")"
+[ -n "$latest" ] && [ -f "$latest" ] || exit 0
 
-data="${CLAUDE_PLUGIN_DATA:-$(hb_handoff_dir)}"
-mkdir -p "$data" 2>/dev/null
-counter="$data/enforce.${sid}.count"
-lock="$data/enforce.${sid}.lock"
+hb_ensure_state
+counter="$(hb_state_dir)/enforce.${sid}.count"
+lock="$(hb_state_dir)/enforce.${sid}.lock"
 
-# Serialize the check-and-increment so concurrent Stop hooks can't lose updates.
-# flock is best-effort: if it's unavailable (e.g. macOS), fd 9 is just an open
-# file and we proceed unlocked — session-scoping already removes cross-session
-# contention, so the residual same-session race is benign.
-exec 9>"$lock" 2>/dev/null
-command -v flock >/dev/null 2>&1 && flock -x 9 2>/dev/null
+# Serialize check-and-increment. Returns 0 ⇒ should block; 1 ⇒ allow stop.
+_enforce_decide() {
+  if ! grep -q "<!-- TODO" "$latest" 2>/dev/null; then
+    rm -f "$counter" 2>/dev/null; return 1          # filled in: reset, allow stop
+  fi
+  local n=0
+  [ -f "$counter" ] && n="$(cat "$counter" 2>/dev/null || echo 0)"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -ge 2 ]; then
+    rm -f "$counter" 2>/dev/null; return 1          # gave up after 2: never trap the user
+  fi
+  echo $((n + 1)) > "$counter" 2>/dev/null
+  return 0
+}
 
-# If no "<!-- TODO -->" placeholder markers remain, it's been filled: reset and allow stop.
-# (Match the marker specifically, not the word "TODO", which also appears in the banner.)
-if ! grep -q "<!-- TODO" "$latest" 2>/dev/null; then
-  rm -f "$counter" 2>/dev/null
-  exit 0
-fi
-
-n=0
-[ -f "$counter" ] && n="$(cat "$counter" 2>/dev/null || echo 0)"
-case "$n" in ''|*[!0-9]*) n=0 ;; esac
-
-if [ "$n" -ge 2 ]; then
-  # Give up after 2 nudges so we never trap the user.
-  rm -f "$counter" 2>/dev/null
-  exit 0
-fi
-echo $((n + 1)) > "$counter" 2>/dev/null
+hb_with_lock "$lock" _enforce_decide || exit 0
 
 rel="$(hb_rel "$latest")"
-jq -n --arg f "$rel" '{
-  decision: "block",
-  reason: ("The auto-generated handoff at " + $f + " still has unfilled \"<!-- TODO -->\" placeholders. Open it and replace each one with concrete details (task & progress, key decisions, open questions/blockers, next steps, resume instructions) drawn from this session, then stop.")
-}'
+printf '{"decision":"block","reason":"The auto-generated handoff at %s still has unfilled \\"<!-- TODO -->\\" placeholders. Open it and replace each one with concrete detail (task & progress, key decisions, open questions/blockers, next steps, resume instructions) from this session, then stop."}\n' "$rel"
 exit 0

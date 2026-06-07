@@ -1,58 +1,119 @@
 #!/usr/bin/env bash
-# Prints the most recent handoff in full, for the /session-handoff:resume command.
+# /session-handoff:resume — load a topic's latest handoff (see docs/V2-SPEC.md §6.2).
+#
+# Resolution order (first match wins):
+#   1. explicit <id|topic> arg              -> that handoff
+#   2. sessions/<sid>.topic                 -> its latest manual handoff
+#   3. sessions/<sid>.pending-clear baton   -> that topic's latest (post-/clear)
+#   4. exactly one recent topic             -> its latest
+#   5. several recent topics                -> PICK: a topic picker (no mutation)
+#
+# When a SINGLE handoff is resolved (cases 1–4) it is being loaded, so this script
+# records the side effects of adopting that topic: sessions/<sid>.topic, the cwd
+# pointer, and clearing the consumed .pending-clear baton. The picker (case 5)
+# mutates nothing — the user re-runs `resume.sh <id>` to choose, hitting case 1.
+#
+# Output shapes (the command .md branches on these):
+#   "Source: <rel> (topic: <slug> — <how>)\n\n<file>"   a handoff was loaded
+#   "PICK: ..."                                          a topic picker
+#   "_No handoff ..._"                                   nothing to resume
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-# Slash commands have no stdin payload; fall back to the session-id env var.
 sid="$(hb_session_short)"
+hb_gc_sweep >/dev/null 2>&1
+hb_migrate_legacy >/dev/null 2>&1
 
-# Prefer this session's own latest handoff — unambiguous, no contamination. Skip
-# when unidentified so a degraded session can't claim another's "nosession" handoff.
-own=""
-hb_session_is_degraded "$sid" || own="$(hb_latest_for "$sid")"
-if [ -n "${own:-}" ] && [ -f "${own:-}" ]; then
-  echo "Source: $(hb_rel "$own") (this session)"
+# Args: ignore a --auto flag (that governs model behavior, not resolution); the
+# first remaining token is an explicit <id|topic>.
+arg=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --auto) ;;
+    *) [ -z "$arg" ] && arg="$1" ;;
+  esac
+  shift
+done
+
+# Load a resolved handoff: record topic adoption, then print Source + contents.
+_emit_loaded() {  # file  how
+  local f="$1" how="$2" topic
+  topic="$(hb_fm_get "$f" topic)"; [ -n "$topic" ] || topic="$(basename "$(dirname "$f")")"
+  if ! hb_session_is_degraded "$sid"; then
+    hb_session_topic_set "$sid" "$topic"
+    hb_pending_clear_clear "$sid"
+  fi
+  hb_ptr_set "$topic" "$sid"
+  echo "Source: $(hb_rel "$f") (topic: ${topic} — ${how})"
   echo
-  cat "$own"
+  cat "$f"
+}
+
+# ---- 1. Explicit id/topic argument --------------------------------------------
+if [ -n "$arg" ]; then
+  f="$(hb_resolve_id "$arg")"
+  if [ -n "$f" ] && [ -f "$f" ]; then
+    _emit_loaded "$f" "requested \"$arg\""
+    exit 0
+  fi
+  echo "_No handoff matches \"$arg\". Run /session-handoff:list to see what's available._"
   exit 0
 fi
 
-# No handoff tagged for this session (post-/clear, fresh, forked, concurrent, or a
-# teammate's clone). Choose from the portable manual handoffs. /resume is explicit
-# user intent, so these are valid to load — we just disambiguate when there's more
-# than one candidate.
-total="$(hb_recent_manual 9999 | grep -c .)"
+# ---- 2. The session's own recorded topic --------------------------------------
+if ! hb_session_is_degraded "$sid"; then
+  mytopic="$(hb_session_topic_get "$sid")"
+  if [ -n "$mytopic" ]; then
+    f="$(hb_latest_manual_in_topic "$mytopic")"
+    if [ -n "$f" ] && [ -f "$f" ]; then
+      _emit_loaded "$f" "this session's topic"
+      exit 0
+    fi
+  fi
 
-if [ "$total" -eq 0 ]; then
-  echo "_No handoff found in $(hb_rel "$(hb_handoff_dir)"). Run /session-handoff:save to create one._"
+  # ---- 3. A claimed clear-baton (the post-/clear happy path) -------------------
+  pend="$(hb_pending_clear_topic "$sid")"
+  if [ -n "$pend" ]; then
+    f="$(hb_latest_manual_in_topic "$pend")"
+    if [ -n "$f" ] && [ -f "$f" ]; then
+      _emit_loaded "$f" "resumed after /clear"
+      exit 0
+    fi
+  fi
+fi
+
+# ---- 4 & 5. Fall back to recent topics in this project ------------------------
+topics="$(hb_recent_topics 5)"
+count="$(printf '%s\n' "$topics" | grep -c .)"
+
+if [ "${count:-0}" -eq 0 ]; then
+  echo "_No handoff found under $(hb_rel "$(hb_handoff_dir)"). Run /session-handoff:save to create one._"
   exit 0
 fi
 
-if [ "$total" -eq 1 ]; then
-  # Exactly one checkpoint — just load it (this is the common save -> /clear -> resume case).
-  only="$(hb_recent_manual 1)"
-  tag="$(hb_handoff_sid "$(basename "$only")")"; tag="${tag:-legacy}"
-  echo "Source: $(hb_rel "$only") (portable handoff; saved in session ${tag})"
-  echo
-  cat "$only"
-  exit 0
+if [ "${count:-0}" -eq 1 ]; then
+  f="$(printf '%s\n' "$topics" | cut -f3)"
+  if [ -n "$f" ] && [ -f "$f" ]; then
+    _emit_loaded "$f" "only recent topic"
+    exit 0
+  fi
 fi
 
-# Two or more candidates: present a picker and do NOT load anything yet.
-echo "PICK: no handoff is tagged for this session. Recent handoffs to resume (newest first):"
+# ---- 5. Several topics: present a picker, mutate nothing ----------------------
+echo "PICK: multiple topics in this project. Choose one to resume (newest first):"
 echo
 i=0
-hb_recent_manual 5 | while IFS= read -r f; do
+printf '%s\n' "$topics" | while IFS="$(printf '\t')" read -r base topic path; do
+  [ -n "$topic" ] || continue
   i=$((i + 1))
-  base="$(basename "$f")"
-  tag="$(hb_handoff_sid "$base")"; tag="${tag:-legacy}"
+  ttl="$(hb_fm_get "$path" topic_title)"; [ -n "$ttl" ] || ttl="$topic"
   when="$(hb_handoff_when "$base")"; [ -n "$when" ] || when="unknown time"
-  summ="$(hb_handoff_summary "$f")"; [ -n "$summ" ] || summ="(no task summary)"
-  echo "$i. [$when · session $tag] $summ"
-  echo "     $(hb_rel "$f")"
+  summ="$(hb_handoff_summary "$path")"; [ -n "$summ" ] || summ="(no task summary)"
+  echo "$i. [$when] $ttl ($topic)"
+  echo "     id: $(hb_handoff_id "$path")"
+  echo "     $summ"
 done
-[ "$total" -gt 5 ] && { echo; echo "_(showing 5 of $total — ask to resume a specific path for an older one)_"; }
 echo
-echo "_Reply with a number to load that handoff. Under --auto, entry 1 (newest) is loaded automatically._"
+echo "_Reply with a number to resume that topic. Under --auto, entry 1 (newest) is loaded automatically._"
 exit 0

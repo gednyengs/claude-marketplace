@@ -1,13 +1,30 @@
 # Session Handoff
 
-Preserve and restore working context across Claude Code sessions, agent switches, and
-context-window compaction.
+Preserve and restore working context across Claude Code sessions, `/clear`, agent switches,
+and context-window compaction — organized by **topic** so a workstream stays connected no
+matter what rotates the session id.
 
-When you stop mid-task, switch focus, hit auto-compaction, or hand work to a teammate, the
-expensive context is lost: what you were doing, the decisions you made and why, what's
-blocking you, and how to run the thing. Session Handoff captures the **necessary and
-sufficient** context into version-controlled `.handoff/` files so any later session can
-pick up cleanly.
+When you stop mid-task, switch focus, hit auto-compaction, clear the context, or hand work to
+a teammate, the expensive context is lost: what you were doing, the decisions you made and
+why, what's blocking you, and how to run the thing. Session Handoff captures the **necessary
+and sufficient** context into version-controlled handoff files so any later session can pick
+up cleanly.
+
+## Topics: the unit of continuity
+
+A **topic** is a thread of work that spans many sessions. Claude Code's `session_id` is an
+implementation artifact — `/clear` starts a brand-new one — so keying continuity on the
+session breaks a workstream at every clear. v2 keys on the topic instead.
+
+- A session **acquires a topic lazily** — the first time you save, resume, or load — and
+  rarely needs to be named by hand (it's derived from your save note, or carried forward
+  across `/clear`).
+- Handoffs live under `.claude/sekekama/session-handoff/handoffs/<topic-slug>/`, named
+  `YYYY-MM-DD-HHMMSS-<sessionid>[-auto].md` so they sort chronologically and never collide
+  between concurrent sessions.
+- Each file opens with YAML **frontmatter that is the source of truth** (`topic`,
+  `topic_title`, `session_id`, `created`, `kind`, optional `note` and `depends_on`). The
+  topic subdirectory is just organization — a misfiled file is still correctly attributed.
 
 ## What it captures
 
@@ -16,80 +33,100 @@ pick up cleanly.
 - **Open questions & blockers** — what's unresolved or waiting on input.
 - **Next steps** — an ordered, actionable checklist.
 - **Environment & commands** — how to build/test/run and reproduce the working state
-  (auto-detected from `package.json`, `Makefile`, `pyproject.toml`, `Cargo.toml`,
-  `go.mod`, Gradle, Maven, and more).
+  (auto-detected from `package.json`, `Makefile`, `pyproject.toml`, `Cargo.toml`, `go.mod`,
+  Gradle, Maven, and more).
 - **Repo snapshot** — branch, working-tree status, and recent commits.
 
-Handoffs live in `.handoff/<YYYY-MM-DD-HHMMSS>-<session-id>.md` at the project root. They
-sort chronologically, form a readable history, and are designed to be **committed with the
-repo** — great for async and team handoffs. Auto-generated safety snapshots use the
-`-auto.md` suffix.
-
-The session-id tag makes the plugin safe under **multiple concurrent sessions** in one
-project: each session's files are distinct (no collisions), auto-snapshots stay private to
-the session that wrote them, and manual handoffs remain portable for any session or
-teammate to resume. See [Concurrency & session scoping](#concurrency--session-scoping).
+Manual handoffs (`/save`) are portable and meant to be **committed with the repo** — great for
+async and team handoffs. Auto-generated safety snapshots use the `-auto.md` suffix and belong
+to the session that wrote them.
 
 ## Commands
 
-### `/session-handoff:save [note]`
+### `/session-handoff:save [note] [--topic <slug>]`
 
-Capture the current session to a new handoff file. Runs a deterministic project snapshot
-first (git + detected commands), then writes a structured, concise handoff filled from the
-conversation. Add an optional note to label the checkpoint.
+Capture the current session to a new handoff. Runs a deterministic project snapshot first
+(git + detected commands), resolves the topic (`--topic` → the session's recorded topic →
+a new topic seeded from the note), writes a structured handoff with schema-2 frontmatter, then
+records the topic and refreshes the per-directory pointer. Any pending cross-topic links
+(from `/load`) are folded in as `depends_on`.
 
-### `/session-handoff:resume [--auto]`
+### `/session-handoff:resume [--auto] [<id|topic>]`
 
-Load a handoff and prepare to continue. If this session already has its own handoff (or
-there's exactly one recent checkpoint — the usual case after `/save` then `/clear`), it
-loads that directly. If several recent handoffs exist across sessions, it shows a short
-picker (up to 5, newest first, with a one-line summary each) and asks which to resume.
-By default it then recaps the task, verifies the repo snapshot still matches reality, and
-asks how to proceed. Pass `--auto` to skip straight to executing the recorded next steps
-(auto-selecting the newest when a picker would otherwise be shown).
+Load the right topic and prepare to continue. With no argument it resolves, in order: this
+session's topic → a post-`/clear` baton → the only recent topic → otherwise a short **picker**
+of recent topics to choose from. Pass an explicit `<id|topic>` to target one. It verifies the
+repo snapshot still matches reality, recaps the task, and asks how to proceed — or, with
+`--auto`, goes straight to executing the recorded next steps.
 
-You can also just ask in plain language ("save a handoff", "where did we leave off?") —
-the bundled **session-handoff skill** triggers the same workflow.
+### `/session-handoff:load <id|topic>`
+
+Pull **any** topic's handoff into context for reference (e.g. to consult related work) without
+changing your current topic. If it belongs to a different topic, its id is recorded so your
+next `/save` notes it as a `depends_on` cross-topic reference.
+
+### `/session-handoff:list [MAX] [--any]`
+
+Browse handoffs in the current topic (newest first), or with `--any` the latest handoff per
+topic across the whole project. Read-only; each row's id feeds `/load` and `/resume`.
+
+You can also just ask in plain language ("save a handoff", "where did we leave off?") — the
+bundled **session-handoff skill** triggers the same workflow.
 
 ## Automatic safety net
 
-Three hooks protect context without you asking:
+Four hooks protect context without you asking:
 
 | Hook | Event | What it does |
 | --- | --- | --- |
-| `session-start.sh` | **SessionStart** | Injects **this session's own** latest handoff so a resumed or post-compaction session knows where it stood (output capped). If the session has none, it shows only a pointer to `/session-handoff:resume` — no other session's content is injected. |
-| `precompact.sh` | **PreCompact** | Writes a deterministic safety snapshot before compaction and asks Claude to enrich it while it still has full context. |
-| `enforce.sh` | **Stop** | If the latest auto-snapshot still has `<!-- TODO -->` placeholders, nudges Claude (at most twice) to finish it, then gets out of the way. |
+| `session-start.sh` | **SessionStart** | Source-aware: `resume` → no-op (transcript already restored); `compact` → a concise continue-nudge (auto) or light pointer (manual) to the snapshot; `clear` → recaps the topic you just cleared and offers `/resume` (or a picker if clears are ambiguous); `startup` → a short list of recent topics. Output capped; never silently adopts a topic. |
+| `session-end.sh` | **SessionEnd** | On `/clear`, leaves a per-directory "baton" carrying the cleared session's own topic so the next session can pick it back up. No eager deletion — state is reclaimed by age. |
+| `precompact.sh` | **PreCompact** | Writes a deterministic safety snapshot to the session's topic before compaction and asks Claude to enrich it (emphasizing the in-flight step) while it still has full context. |
+| `enforce.sh` | **Stop** | If the session's latest auto-snapshot still has `<!-- TODO -->` placeholders, nudges Claude (at most twice) to finish it, then gets out of the way. |
 
-This means even an unattended session that hits auto-compaction leaves behind a usable
-handoff with real git/environment facts.
+Even an unattended session that hits auto-compaction leaves behind a usable handoff with real
+git/environment facts.
 
-## Concurrency & session scoping
+## Continuity across `/clear` & concurrency
 
-Handoff files are keyed on the Claude Code session id, resolved (in order) from the hook
-stdin `session_id`, the transcript-path basename, the `CLAUDE_CODE_SESSION_ID` environment
-variable, or a degraded `nosession` bucket as a last resort. The id is stable across
-context compaction and `--resume`/`--continue`, so a single workstream keeps one identity.
-Note that `/clear` starts a **new** session id — `/resume` bridges this (see below) by
-offering your recent portable handoffs to pick from, so a save → `/clear` → resume flow
-still continues cleanly.
+`/clear` starts a **new** session id with no correlator to the old one except the working
+directory. v2 bridges this with a small **baton**: `SessionEnd(clear)` appends the cleared
+session's own topic to a per-directory clears log, and the next `SessionStart(clear)` claims
+it (once), suggesting that topic — your `/resume` then continues it. Two concurrent clears in
+the same directory are detected as ambiguous and degrade to a picker.
 
-Two handoff kinds are scoped differently:
+The plugin stays safe under **multiple concurrent sessions** in one project:
 
-- **Auto-snapshots** (`-auto.md`, written by PreCompact) are **private** to the session
-  that created them. SessionStart only injects *your own* session's latest, and the Stop
-  hook only ever enforces *your own* unfilled snapshot — so one session's pending
-  compaction can never block or contaminate another's.
-- **Manual handoffs** (`/save`) are **portable**: tagged with the originating session for
-  provenance and collision-avoidance, but resumable by any session or teammate. When a
-  fresh, forked, or just-cleared session has no handoff of its own, SessionStart only
-  points to `/resume` (it never injects another session's content). `/resume` itself is
-  permissive: it loads the single recent handoff directly, or — when several exist across
-  sessions — shows a short picker to choose from rather than silently adopting one.
+- Each session writes only its **own** timestamped, session-tagged handoff files — no write
+  contention, no merge conflicts.
+- Topic grouping derives from **frontmatter**, so any directory view is regenerable; a stale
+  index is never load-bearing.
+- **Ephemeral state lives outside the repo** in `$CLAUDE_PLUGIN_DATA` (fallback: a gitignored
+  in-repo `.state/`), keyed per-session or per-directory, **line-oriented (`key=value` / TAB),
+  never JSON**. It is reclaimed by an **age-based sweep** (default 14-day TTL), so a crash that
+  skips `SessionEnd` self-heals and a `--resume` (same session id) never forgets its topic.
 
 **Known limitation:** the git working-tree snapshot is shared across sessions, so a handoff
 saved while another session has uncommitted edits in the same tree can misattribute those
 changes. Use separate git worktrees if that matters for your workflow.
+
+## Migrating from v1
+
+The first time v2 runs (any command or a new session), it **copies** legacy `.handoff/*.md`
+into the `legacy` topic at `.claude/sekekama/session-handoff/handoffs/legacy/`, synthesizing
+schema-2 frontmatter from each filename. The migration is idempotent and copy-before-delete:
+your originals are left untouched and a `.handoff/README.md` tombstone points to the new
+location. Run it by hand any time with `scripts/migrate.sh`. Delete `.handoff/` once you've
+confirmed the move; browse the result with `/session-handoff:list --any` or
+`/session-handoff:resume legacy`.
+
+## Commit posture
+
+The plugin is **commit-neutral**: it writes artifacts and lets your project's own `.gitignore`
+decide what is tracked — it never edits `.gitignore` or forces tracking. To **keep handoffs in
+git**, ignore `.claude/` granularly (e.g. only `.claude/settings.local.json`), not wholesale —
+git cannot re-include a subtree under a fully-ignored `.claude/`. Ephemeral state lives outside
+the repo, so it is never committed either way.
 
 ## Install
 
@@ -105,29 +142,29 @@ Then restart or run `/reload-plugins`. Verify with `/plugin validate`.
 
 ## Design notes & differences
 
-- **Low always-on cost.** Unlike approaches that inject a directive on *every* user prompt,
-  this plugin only touches context at the two moments it's actually at risk — compaction
-  and session start — plus deliberate `/save`. That keeps per-turn token overhead near zero.
-- **Deterministic first, model second.** Git state and build commands are gathered by
-  shell scripts (ground truth), and the model fills the judgment sections. The PreCompact
-  snapshot is useful even if the model never enriches it.
-- **Graceful degradation.** `jq` is used when present but never required; without it the
-  plugin captures slightly less and skips Stop-hook enforcement rather than failing.
-- **No loops, no nagging.** Enforcement is gated on unfilled auto-snapshots and capped at
-  two attempts via a counter in the plugin's persistent data directory.
-- **Team-friendly.** Timestamped per-handoff files avoid the merge conflicts a single
-  rolling log invites.
+- **Low always-on cost.** The plugin only touches context at the moments it's actually at risk
+  — compaction, session start/end — plus deliberate `/save`, `/resume`, `/load`, `/list`. That
+  keeps per-turn token overhead near zero.
+- **Deterministic first, model second.** Git state and build commands are gathered by shell
+  scripts (ground truth); the model fills the judgment sections. The PreCompact snapshot is
+  useful even if the model never enriches it.
+- **No `jq` dependency.** Ephemeral state is line-oriented, so the plugin never requires `jq`;
+  it's used only when present to enrich command detection.
+- **No loops, no nagging.** Stop-hook enforcement is gated on unfilled auto-snapshots and
+  capped at two attempts via a per-session counter.
+- **Team-friendly.** Timestamped, session-tagged per-handoff files avoid the merge conflicts a
+  single rolling log invites; shared per-directory state is updated via locked atomic writes.
 
 ## Optional: compaction guidance in CLAUDE.md
 
-Claude Code honors a `# Compact instructions` section in your project `CLAUDE.md`. Adding
-this helps compaction preserve the right things:
+Claude Code honors a `# Compact instructions` section in your project `CLAUDE.md`. Adding this
+helps compaction preserve the right things:
 
 ```markdown
 # Compact instructions
 
 When compacting, preserve:
-- the most recent entry in .handoff/
+- the most recent handoff under .claude/sekekama/session-handoff/handoffs/
 - current task state, blockers, and next steps
 - key decisions and constraints
 ```
@@ -136,7 +173,7 @@ When compacting, preserve:
 
 - Claude Code CLI
 - `bash` and `git`
-- `jq` (optional — enables richer command detection and Stop-hook enforcement)
+- `jq` (optional — enriches build/command detection; never required for state)
 
 ## License
 

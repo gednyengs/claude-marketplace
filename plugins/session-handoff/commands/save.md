@@ -1,6 +1,6 @@
 ---
-description: Save a session handoff — capture task state, decisions, blockers, next steps, and how to resume into .handoff/
-argument-hint: "[optional note about this checkpoint]"
+description: Save a session handoff — capture task state, decisions, blockers, next steps, and how to resume. Groups under a topic that survives /clear.
+argument-hint: "[note] [--topic <slug>]"
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 ---
 
@@ -12,36 +12,43 @@ Deterministic project snapshot (gathered for you just now):
 
 !`"${CLAUDE_PLUGIN_ROOT}"/scripts/snapshot.sh`
 
-Write the handoff to **exactly** this path (it is tagged with the current session id
-so concurrent sessions in the same project never collide):
+Destination path and the exact frontmatter to use (topic already resolved from
+`--topic`, this session's topic, or a new one — and any cross-topic `depends_on`
+already computed for you):
 
-!`"${CLAUDE_PLUGIN_ROOT}"/scripts/new-path.sh`
-
-Optional note for this checkpoint: $ARGUMENTS
+!`"${CLAUDE_PLUGIN_ROOT}"/scripts/new-path.sh $ARGUMENTS`
 
 Now do the following:
 
-1. Use the exact path printed above (the `.handoff/` directory is already created for
-   you). Do not invent your own filename — the session tag matters.
-2. Write the file with **exactly** these sections, filled from THIS conversation.
-   Be concise but sufficient — favor specifics (paths, names, command lines, decisions)
-   over generalities:
-
+1. **Write the handoff to the exact `PATH` printed above.** Do not invent a filename —
+   the timestamp + session tag prevent collisions between concurrent sessions.
+2. **Begin the file with the verbatim frontmatter block** printed above (between its
+   `---` fences). You may improve `topic_title` to a concise human title, but keep
+   `topic`, `session_id`, `created`, `kind`, and any `depends_on` exactly as given.
+3. After the frontmatter, write these sections, filled from THIS conversation. Be concise
+   but sufficient — favor specifics (paths, names, command lines, decisions) over generalities:
    - `# Handoff — <human-readable date/time>`
-   - A one-line note if `$ARGUMENTS` was provided.
    - `## Task & progress` — the goal; what's done; what's in progress; what's not started.
    - `## Key decisions & rationale` — important choices and *why*, so they aren't relitigated.
    - `## Open questions & blockers` — unresolved questions, things waiting on input, known risks.
    - `## Next steps` — an ordered, actionable checklist of what to do next.
    - `## Environment & commands` — how to build/test/run, env vars, setup, and how to
-     reproduce the current working state. Start from the detected commands in the
-     snapshot above and refine them with what you actually used this session.
-   - `## Repo snapshot` — paste the branch / working tree / recent commits from the
-     snapshot above.
+     reproduce the current working state. Start from the detected commands in the snapshot
+     above and refine them with what you actually used this session.
+   - `## Repo snapshot` — paste the branch / working tree / recent commits from the snapshot above.
    - `## Resume instructions` — the first few concrete actions the next session should take.
+4. Do **not** write secrets, tokens, or credentials into the handoff.
+5. **After writing**, run this to record the save (sets the session's topic, refreshes the
+   per-directory pointer, and clears consumed pending state). Pass the same `PATH` and `TOPIC`
+   printed above — the script verifies the file before recording, so use the exact values:
 
-3. Do **not** write secrets, tokens, or credentials into the handoff.
-4. After writing, print the relative path and a 3–5 bullet summary of what you captured.
+   ```
+   "${CLAUDE_PLUGIN_ROOT}"/scripts/save-record.sh <PATH> <TOPIC>
+   ```
 
-This handoff is meant to be committed with the repo, so write it for your future self
-and your teammates.
+6. Print the relative path, the topic, and a 3–5 bullet summary of what you captured. **If a
+   `NOTICE:` line was printed above, relay it to the user** (it means you started a new topic
+   while a recently-cleared topic was still resumable).
+
+This handoff is meant to be committed with the repo, so write it for your future self and
+your teammates.

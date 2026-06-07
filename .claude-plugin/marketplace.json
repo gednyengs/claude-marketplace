@@ -10,9 +10,9 @@
     {
       "name": "session-handoff",
       "source": "./plugins/session-handoff",
-      "description": "Save and restore working context across Claude Code sessions and context compaction.",
+      "description": "Save and restore working context across Claude Code sessions, grouped by topic so continuity survives /clear, restarts, and context compaction.",
       "category": "workflow",
-      "tags": ["handoff", "session", "context", "resume", "compaction"]
+      "tags": ["handoff", "session", "topic", "context", "resume", "compaction"]
     },
     {
       "name": "grill-to-plan",

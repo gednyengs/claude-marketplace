@@ -1,6 +1,21 @@
-# Handoff — <YYYY-MM-DD HH:MM:SS TZ>
+<!--
+Frontmatter is the source of truth (topic, provenance, cross-topic links). Use the exact
+block printed by new-path.sh; the fields below show the schema. `note` and `depends_on` are
+optional — omit them when empty.
+-->
+---
+schema: 2
+topic: <topic-slug>                       # stable kebab-case slug; the unit of continuity
+topic_title: "<Human-readable title>"     # may be refined later without renaming the slug
+session_id: <sid>                         # originating session (provenance + collision-avoidance)
+created: <YYYY-MM-DDThh:mm:ss±zz:zz>
+kind: manual                              # manual | auto
+note: "<optional one-line checkpoint note>"
+depends_on:                               # optional; cross-topic handoff ids only
+  - <other-topic>/<timestamp>-<sid>
+---
 
-<!-- Optional one-line note describing this checkpoint. -->
+# Handoff — <YYYY-MM-DD HH:MM:SS TZ>
 
 ## Task & progress
 

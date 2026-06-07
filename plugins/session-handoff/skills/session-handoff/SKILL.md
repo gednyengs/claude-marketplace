@@ -6,73 +6,95 @@ description: >
   handoff", "checkpoint where we are", "I'm stopping for the day", "write down where
   we left off"), or to pick work back up ("resume", "where did we leave off", "continue
   from the handoff", "catch me up on this project"). Captures task state, decisions,
-  blockers, next steps, and environment commands into version-controlled .handoff/ files.
+  blockers, next steps, and environment commands into version-controlled handoff files,
+  grouped by topic so continuity survives /clear, restarts, and compaction.
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep
 ---
 
 # Session handoff
 
-This skill preserves the "necessary and sufficient" context to resume work later — in a
-new session, by a teammate, or after context compaction. Handoffs are markdown files in a
-`.handoff/` directory at the project root, named `YYYY-MM-DD-HHMMSS-<sessionid>.md` so they
-sort chronologically, form a history, and never collide between concurrent sessions in the
-same project. Pre-compaction safety snapshots use a `-auto.md` suffix. Manual handoffs are
-portable and meant to be committed with the repo; a teammate or new session can resume any
-of them. Auto-snapshots are private to the session that created them.
+This skill preserves the "necessary and sufficient" context to resume work later — in a new
+session, by a teammate, or after context compaction.
 
-There are two equivalent entry points: the `/session-handoff:save` and
-`/session-handoff:resume` slash commands, and this skill for when the user asks in natural
-language. The behavior is the same.
+The unit of continuity is a **topic**: a thread of work that spans many sessions. Because
+`/clear` starts a brand-new session id, handoffs are keyed on the topic (not the session) so
+a workstream stays connected across `/clear`, restarts, and compaction. A session acquires a
+topic lazily — the first time you save, resume, or load — and otherwise you rarely name topics
+by hand.
+
+Handoffs are markdown files under `.claude/sekekama/session-handoff/handoffs/<topic-slug>/`,
+named `YYYY-MM-DD-HHMMSS-<sessionid>.md` so they sort chronologically and never collide
+between concurrent sessions. Pre-compaction safety snapshots use a `-auto.md` suffix. Each
+file opens with YAML **frontmatter that is the source of truth** (`topic`, `topic_title`,
+`session_id`, `created`, `kind`, optional `depends_on`) — the topic subdirectory is just
+human-facing organization. Manual handoffs are portable and meant to be committed; auto-snapshots
+belong to the session that created them.
+
+There are two equivalent entry points: the `/session-handoff:*` slash commands, and this skill
+for when the user asks in natural language. The behavior is the same.
 
 ## Saving a handoff
 
-1. Gather a deterministic snapshot by running the bundled script:
-   `"${CLAUDE_PLUGIN_ROOT}"/scripts/snapshot.sh`
-   It prints the git branch, working-tree status, recent commits, and detected
-   build/test/run commands. Use this as factual ground truth.
-2. Get the exact target path (already session-tagged, with `.handoff/` created) by running:
-   `"${CLAUDE_PLUGIN_ROOT}"/scripts/new-path.sh`
-   Write to that exact path — do not invent a filename, since the session tag prevents
-   collisions with other concurrent sessions.
-3. Write the file using the structure in
-   `templates/HANDOFF_TEMPLATE.md` (read it once for the exact headings). Fill every
-   section from the conversation:
-   - **Task & progress** — goal; done; in progress; not started.
-   - **Key decisions & rationale** — choices and *why*.
-   - **Open questions & blockers** — unresolved items, waiting-ons, risks.
-   - **Next steps** — ordered, actionable checklist.
-   - **Environment & commands** — build/test/run, env vars, setup, how to reproduce state.
-   - **Repo snapshot** — the git facts from the snapshot script.
-   - **Resume instructions** — the first concrete actions for the next session.
-4. Be concise but sufficient; prefer specifics (paths, names, exact commands) over vague
-   summaries. Never write secrets, tokens, or credentials.
-5. Report the path and a short summary of what you captured.
+1. Gather a deterministic snapshot: `"${CLAUDE_PLUGIN_ROOT}"/scripts/snapshot.sh` — git branch,
+   working tree, recent commits, and detected build/test/run commands. Use it as ground truth.
+2. Resolve the destination and frontmatter: `"${CLAUDE_PLUGIN_ROOT}"/scripts/new-path.sh [note] [--topic <slug>]`.
+   It prints the exact `PATH`, the resolved `TOPIC`, a **verbatim frontmatter block** (with any
+   cross-topic `depends_on` already filled in), and possibly a `NOTICE:`. The topic comes from
+   `--topic`, else this session's recorded topic, else a new one derived from the note.
+3. Write the file to that exact `PATH`, starting with the verbatim frontmatter block (you may
+   refine `topic_title`), then the body sections from `templates/HANDOFF_TEMPLATE.md`:
+   Task & progress · Key decisions & rationale · Open questions & blockers · Next steps ·
+   Environment & commands · Repo snapshot · Resume instructions. Be concise but specific
+   (paths, names, exact commands). **Never write secrets, tokens, or credentials.**
+4. Commit the side effects: `"${CLAUDE_PLUGIN_ROOT}"/scripts/save-record.sh <PATH> <TOPIC>` — records
+   the session's topic, refreshes the per-directory pointer, clears consumed pending state. Run this
+   only **after** the file is written; it verifies the handoff at `<PATH>` before recording, so
+   pending cross-topic links are never lost on an abort.
+5. Report the path, the topic, and a short summary. If `new-path.sh` printed a `NOTICE:`, relay
+   it — it means a new topic was started while a recently-cleared topic was still resumable.
 
 ## Resuming from a handoff
 
-1. Run `"${CLAUDE_PLUGIN_ROOT}"/scripts/resume.sh`. Its output is one of three shapes:
-   - **A handoff was loaded** (starts with `Source:`): this session's own handoff, or —
-     after `/clear` or in a new session — the single recent portable handoff. Either is
-     valid to resume; do not treat it as suspicious.
-   - **A picker** (starts with `PICK:` and a numbered list): the session has no handoff of
-     its own and several exist. Present the list and ask which number to resume (or, when
-     continuing automatically, take entry 1, the newest), then read that file.
+1. Run `"${CLAUDE_PLUGIN_ROOT}"/scripts/resume.sh [--auto] [<id|topic>]`. Its output is one of four shapes:
+   - **A handoff was loaded** (`Source:` … with a `(topic: … — how)` tag): resolved from this
+     session's topic, a post-`/clear` baton, the only recent topic, or your explicit id/topic.
+     The script has already recorded the topic. Valid to resume — don't treat it as suspicious.
+   - **A picker** (`PICK:` + a numbered topic list, each with an `id:`): no topic for this session
+     and several exist. Present it and ask which number (or take entry 1 when continuing
+     automatically), then load the choice by re-running `resume.sh <id>`.
    - **No handoff found**: tell the user and offer `/session-handoff:save`.
+   - **No match** (`_No handoff matches …_`): the requested id/topic didn't resolve; suggest
+     `/session-handoff:list --any`.
 2. Verify the repo snapshot still matches reality (`git status`, current branch); note drift.
-3. Recap the task, where it stopped, blockers, and proposed next steps. Ask before making
-   changes unless the user clearly wants you to continue automatically.
+3. Recap the task, where it stopped, blockers, and proposed next steps. Ask before making changes
+   unless the user clearly wants you to continue automatically (`--auto` → execute the next steps).
+
+## Loading & listing
+
+- `"${CLAUDE_PLUGIN_ROOT}"/scripts/load.sh <id|topic>` — pull **any** topic's handoff into context
+  for reference *without* changing the session's current topic. If it's a different topic, its id
+  is recorded so the next save notes it as a `depends_on`. Summarize what it covers and how it
+  relates; don't switch tasks unless asked.
+- `"${CLAUDE_PLUGIN_ROOT}"/scripts/list.sh [MAX] [--any]` — list handoffs in the current topic, or
+  with `--any` the latest per topic across the project. Read-only; each row's `id` feeds `load`/`resume`.
+
+Ids are `<topic>/<timestamp>-<session>`; a bare topic slug also works and means "the latest handoff
+in that topic".
 
 ## Automatic safety net (hooks)
 
-The plugin also protects context without being asked:
-- **PreCompact** writes a deterministic safety snapshot (with TODO placeholders) before the
-  context window is compacted, and asks you to enrich it while you still have full context.
-- **SessionStart** injects *this session's own* latest handoff so a resumed or
-  post-compaction session knows where it stood. If the session has none (fresh, forked, or
-  just-cleared), it only points to `/session-handoff:resume` — it never injects another
-  session's content.
+The plugin protects context without being asked:
+- **PreCompact** writes a deterministic safety snapshot (with `<!-- TODO -->` placeholders) to the
+  session's topic before the context window is compacted, and asks you to enrich it — emphasizing
+  the **in-flight step** — while you still have full context.
+- **SessionStart** is source-aware: `resume` → no-op (the transcript is already restored);
+  `compact` → a concise continue-nudge (auto) or light pointer (manual) to the snapshot; `clear` →
+  recaps the topic you just cleared (claimed from a per-directory clear-log) and offers to resume,
+  or shows a picker if multiple clears are ambiguous; `startup` → a short list of recent topics.
+  It never silently adopts a topic or injects another session's content.
+- **SessionEnd(clear)** leaves a small "baton" carrying the cleared session's own topic, so the
+  next (new) session can pick it back up. No eager deletion — state is reclaimed by an age sweep.
 - **Stop** nudges you (at most twice) to finish filling an auto-snapshot's placeholders.
 
 When you see a PreCompact or Stop directive about an unfilled auto-snapshot, open the named
-`.handoff/*-auto.md` file and replace every `<!-- TODO -->` with real content from the
-conversation.
+`*-auto.md` file and replace every `<!-- TODO -->` with real content from the conversation.
