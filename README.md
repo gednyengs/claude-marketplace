@@ -29,6 +29,7 @@ After installing, run `/reload-plugins` (or restart Claude Code) so the new comp
 | Plugin | Description |
 | --- | --- |
 | [`session-handoff`](plugins/session-handoff) | Save and restore working context across Claude Code sessions and context compaction. |
+| [`grill-to-plan`](plugins/grill-to-plan) | Grill a design to resolve every implementation decision, then synthesize an agent-ready PRD and dependency-ordered implementation plan as a traceable GRILL → PRD → PLAN chain. |
 
 ## Local development
 

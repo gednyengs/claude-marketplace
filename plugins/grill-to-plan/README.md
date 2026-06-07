@@ -13,19 +13,19 @@ Three skills form a pipeline:
    is tagged with its **provenance** (`code-confirmed` / `spec-derived` / `design-intended` /
    `assumed`). Writes a **GRILL** decision record (surface inventory, full formal contracts,
    rationale, rejected alternatives, confidence).
-2. **`to-prd`** — synthesizes a **PRD** from the GRILL. It never interviews and never invents
+2. **`draft-prd`** — synthesizes a **PRD** from the GRILL. It never interviews and never invents
    a decision; it fails closed, refusing to mark a PRD ready while decisions are open.
-3. **`to-plan`** — turns the PRD into a dependency-ordered **PLAN** of implementation tasks.
+3. **`draft-plan`** — turns the PRD into a dependency-ordered **PLAN** of implementation tasks.
    A read-only Plan architect subagent drafts it; a bounded independent review loop hardens it — an
    in-model subagent by default, or an external reviewer you supply via a reviewer instruction (for
    a cross-model review).
 
 ## The artifact chain
 
-Every run writes an append-only, timestamped file under `.claude/specs/<feature>/`:
+Every run writes an append-only, timestamped file under `.claude/grill-me/specs/<feature>/`:
 
 ```
-.claude/specs/<feature>/
+.claude/grill-me/specs/<feature>/
   GRILL-<timestamp>.md   surface inventory + decisions + full formal contracts (source of truth)
   PRD-<timestamp>.md     behavioral spec; references GRILL contracts by id
   PLAN-<timestamp>.md    tasks, each citing the requirement/contract it satisfies
@@ -39,18 +39,62 @@ give end-to-end traceability from any task back to the decision that justifies i
 ## Usage
 
 - **Grill:** "grill me on this design", or invoke `grill-to-plan:grill-me`.
-- **PRD:** after grilling, invoke `grill-to-plan:to-prd`.
-- **Plan:** after the PRD, invoke `grill-to-plan:to-plan`.
+- **PRD:** after grilling, invoke `grill-to-plan:draft-prd`.
+- **Plan:** after the PRD, invoke `grill-to-plan:draft-plan`.
+
+## Example
+
+A short end-to-end run for the feature *"add a `--json` flag to the `report` CLI command."*
+
+**1. `grill-me`** inventories the surfaces it touches and interrogates the open decisions one at a time:
+
+> **You:** grill me on adding a `--json` flag to `report`
+> **grill-me:** With `--json` set, is human-formatted output suppressed entirely, or sent to stderr? *(Recommended: suppress — stdout becomes machine-readable JSON only. Alternative: stderr, which risks mixed formats. Basis: common CLI convention — assumed.)*
+> **You:** suppress it.
+
+It writes `GRILL-<timestamp>.md`. Abbreviated excerpts (a real `Decisions` entry also records rationale, rejected alternatives, evidence, confidence, and test impact):
+
+```
+## Surface Inventory
+- S01  report CLI command   — code-confirmed — covered by D01
+- S02  stdout format        — code-confirmed — covered by D01
+- S03  exit codes           — code-confirmed — considered — no decision — unchanged
+
+## Decisions
+- D01  --json emits one JSON object on stdout; human output suppressed.  provenance: assumed
+```
+
+**2. `draft-prd`** reads that GRILL (no re-interview) and emits a behavioral spec (excerpt):
+
+```
+R01.  Given --json, when report runs, stdout MUST be a single valid JSON object
+      with no human-formatted text.  (covers S01, S02; see GRILL D01)
+```
+
+**3. `draft-plan`** has the Plan architect draft tasks, then a reviewer hardens them. Excerpt — PLAN frontmatter plus one task:
+
+```
+# frontmatter:  status: ready   review: passed   reviewed_by: subagent
+T01  Scope: add --json parsing + JSON emitter to report
+     Depends-on: —
+     Acceptance: R01 (realizes S01, S02)
+     Test: CLI invocation seam, golden-output assertion
+     Size: S
+```
+
+All three files land under `.claude/grill-me/specs/report-json-flag/`, linked by `source`/`supersedes`
+frontmatter — so any task (`T01`) traces back through `R01` → `D01` to the decision that justifies it.
+Whether you commit that directory is your call; committing preserves the full lineage across clones.
 
 ## Requirements
 
-- **`to-plan` reviews the plan with an in-model subagent by default** — nothing leaves your
+- **`draft-plan` reviews the plan with an in-model subagent by default** — nothing leaves your
   environment. To get an *external* (e.g. cross-model) review instead, supply a **reviewer
   instruction**, either as an argument to the run or as a standing preference in your project's
   `CLAUDE.md`. Supplying such an instruction is what sends your PRD, GRILL contracts, and draft
   plan to that external service; an external reviewer falls back to the subagent if it's
   unavailable, and the plan records `reviewed_by` so a `ready` plan reflects which review it got.
-  No skill has a hard external dependency; `grill-me` and `to-prd` use none.
+  No skill has a hard external dependency; `grill-me` and `draft-prd` use none.
   - *Optional example (external review via a separate Codex runner):* if you have installed a
     `codex-runner` skill and the `codex` CLI, your reviewer instruction can be
     `review via the codex-runner skill`. The plugin does **not** ship `codex-runner` — it's an
@@ -63,7 +107,7 @@ give end-to-end traceability from any task back to the decision that justifies i
   first principles when there is no codebase yet — so they work equally on a compiler, a web app,
   or a CLI, brownfield or from scratch.
 - **Fail closed everywhere.** A blocking open decision in the GRILL propagates to a `draft`
-  PRD and halts `to-plan` — nothing builds a plan on an unresolved design.
+  PRD and halts `draft-plan` — nothing builds a plan on an unresolved design.
 
 ## License
 

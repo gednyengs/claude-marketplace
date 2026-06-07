@@ -2,12 +2,14 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "grill-to-plan",
   "displayName": "Grill to Plan",
-  "version": "1.3.0",
-  "description": "Grill a design to resolve every implementation-blocking decision, then synthesize an agent-ready PRD and a dependency-ordered implementation plan as a traceable GRILL → PRD → PLAN artifact chain under .claude/specs/.",
+  "version": "2.0.0",
+  "description": "Grill a design to resolve every implementation-blocking decision, then synthesize an agent-ready PRD and a dependency-ordered implementation plan as a traceable GRILL → PRD → PLAN artifact chain under .claude/grill-me/specs/.",
   "author": {
     "name": "Gedeon Nyengele",
     "email": "7631051+gednyengs@users.noreply.github.com"
   },
   "license": "MIT",
-  "keywords": ["prd", "planning", "design", "spec", "grilling", "decision-record", "implementation-plan", "agent-ready"]
+  "keywords": ["prd", "planning", "design", "spec", "grilling", "decision-record", "implementation-plan", "agent-ready"],
+  "homepage": "https://github.com/gednyengs/claude-marketplace/tree/main/plugins/grill-to-plan",
+  "repository": "https://github.com/gednyengs/claude-marketplace"
 }

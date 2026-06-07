@@ -1,14 +1,14 @@
 ---
-name: to-prd
-description: Synthesize a PRD from a GRILL decision record and save it under .claude/specs/<feature>/. Use when the user wants to create a PRD from a grilling session.
+name: draft-prd
+description: Synthesize a PRD from a GRILL decision record and save it under .claude/grill-me/specs/<feature>/. Use when the user wants to create a PRD from a grilling session.
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 ---
 
 This skill turns a GRILL decision record into a PRD. It does NOT interview the user and never invents a decision — it synthesizes only what the GRILL (and codebase) already establish.
 
-## Artifact rules (shared across grill-me / to-prd / to-plan)
+## Artifact rules (shared across grill-me / draft-prd / draft-plan)
 
-Artifacts live at `.claude/specs/<feature_slug>/<TYPE>-<YYYY-MM-DD-HHMMSS>.md` (`TYPE` ∈ GRILL, PRD, PLAN) and are append-only — never overwrite a file's body. Every artifact carries this frontmatter:
+Artifacts live at `.claude/grill-me/specs/<feature_slug>/<TYPE>-<YYYY-MM-DD-HHMMSS>.md` (`TYPE` ∈ GRILL, PRD, PLAN) and are append-only — never overwrite a file's body. Every artifact carries this frontmatter:
 
 ```
 feature_id:   F-<feature_slug>      # set once at feature creation; reused UNCHANGED by every later artifact and revision
@@ -27,7 +27,7 @@ Emit **every** field above in every artifact, in this order; use `[]` or `false`
 
 Apply these definitions exactly:
 - **Timestamps** come from the real wall clock — run `date +%Y-%m-%d-%H%M%S`. `artifact_id` = filename without `.md`; `created` = the same timestamp.
-- **Resolve `<feature>`** by exact folder-name match under `.claude/specs/` only. No exact match → list candidates and stop. Multiple partial matches → stop and ask. Never guess.
+- **Resolve `<feature>`** by exact folder-name match under `.claude/grill-me/specs/` only. No exact match → list candidates and stop. Multiple partial matches → stop and ask. Never guess.
 - **Latest** artifact of a type = highest `created` among those whose `status` ≠ `superseded`. Tie → lexicographically greatest filename. Still ambiguous → stop and ask the user to name it.
 - **`stale: true` ⇒ the artifact cannot be `ready`.** An artifact is stale when its `source` is not the latest non-superseded artifact (of the source's type) for the feature.
 - **Provenance** — every surface, decision, and formal contract in the GRILL is tagged with where its truth comes from: `code-confirmed`, `spec-derived`, `design-intended`, or `assumed`. Carry these tags through; never upgrade a GRILL `assumed` into a settled PRD requirement.
@@ -47,7 +47,7 @@ Apply these definitions exactly:
 
 3. Confirm the testing seams from the GRILL's context block — do not ask the user. If seams were never resolved, treat that as a blocking Missing Decision (fail closed).
 
-4. Write to `.claude/specs/<feature>/PRD-<timestamp>.md` per the Artifact rules (`type: prd`, `source: [<GRILL artifact_id>]`). `blocking_open_items` = the count of items in the Missing Decisions section. Then report the path and the resulting status.
+4. Write to `.claude/grill-me/specs/<feature>/PRD-<timestamp>.md` per the Artifact rules (`type: prd`, `source: [<GRILL artifact_id>]`). `blocking_open_items` = the count of items in the Missing Decisions section. Then report the path and the resulting status.
 
 <prd-template>
 

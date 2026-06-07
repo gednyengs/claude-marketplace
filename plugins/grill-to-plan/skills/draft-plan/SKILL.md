@@ -1,14 +1,14 @@
 ---
-name: to-plan
-description: Turn a PRD into a dependency-ordered implementation PLAN (Plan architect drafts it, a bounded independent review hardens it — an in-model subagent by default, or an external reviewer when one is supplied via a reviewer instruction) and save it under .claude/specs/<feature>/. Use when the user wants an implementation plan from a PRD.
+name: draft-plan
+description: Turn a PRD into a dependency-ordered implementation PLAN (Plan architect drafts it, a bounded independent review hardens it — an in-model subagent by default, or an external reviewer when one is supplied via a reviewer instruction) and save it under .claude/grill-me/specs/<feature>/. Use when the user wants an implementation plan from a PRD.
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, Agent(Plan), Agent(general-purpose), Skill
 ---
 
 This skill turns a PRD into an implementation **PLAN** — the basis for creating implementation tasks. A read-only Plan architect subagent drafts it; a bounded independent review loop hardens it — an in-model subagent by default, or an external reviewer when the caller supplies a reviewer instruction (as a run argument or a standing preference). It does NOT interview the user.
 
-## Artifact rules (shared across grill-me / to-prd / to-plan)
+## Artifact rules (shared across grill-me / draft-prd / draft-plan)
 
-Artifacts live at `.claude/specs/<feature_slug>/<TYPE>-<YYYY-MM-DD-HHMMSS>.md` (`TYPE` ∈ GRILL, PRD, PLAN) and are append-only — never overwrite a file's body. Every artifact carries this frontmatter:
+Artifacts live at `.claude/grill-me/specs/<feature_slug>/<TYPE>-<YYYY-MM-DD-HHMMSS>.md` (`TYPE` ∈ GRILL, PRD, PLAN) and are append-only — never overwrite a file's body. Every artifact carries this frontmatter:
 
 ```
 feature_id:   F-<feature_slug>      # set once at feature creation; reused UNCHANGED by every later artifact and revision
@@ -27,7 +27,7 @@ Emit **every** field above in every artifact, in this order; use `[]` or `false`
 
 Apply these definitions exactly:
 - **Timestamps** come from the real wall clock — run `date +%Y-%m-%d-%H%M%S`. `artifact_id` = filename without `.md`; `created` = the same timestamp.
-- **Resolve `<feature>`** by exact folder-name match under `.claude/specs/` only. No exact match → list candidates and stop. Multiple partial matches → stop and ask. Never guess.
+- **Resolve `<feature>`** by exact folder-name match under `.claude/grill-me/specs/` only. No exact match → list candidates and stop. Multiple partial matches → stop and ask. Never guess.
 - **Latest** artifact of a type = highest `created` among those whose `status` ≠ `superseded`. Tie → lexicographically greatest filename. Still ambiguous → stop and ask the user to name it.
 - **`stale: true` ⇒ the artifact cannot be `ready`.** An artifact is stale when its `source` is not the latest non-superseded artifact (of the source's type) for the feature.
 - **Provenance** — every surface, decision, and formal contract in the GRILL is tagged `code-confirmed`, `spec-derived`, `design-intended`, or `assumed`. A task whose acceptance rests on an `assumed`-provenance source inherits that risk; surface it under the task's risks.
@@ -73,7 +73,7 @@ Apply these definitions exactly:
 
    Require the reviewer to classify each finding `blocking | non-blocking | style`. Only `blocking` findings trigger a revision and another round. Stop at the first clean round; **cap at 2 rounds**. If blocking findings remain after 2 rounds, write the plan `status: draft` with a review caveat and surface that the PRD/GRILL inputs are likely underspecified. Only fail closed — refuse to write a PLAN at all — if **no** reviewer can run (not even the in-model subagent); report that as a tool/infrastructure failure, not PRD/GRILL underspecification. Otherwise the review always happens, and which reviewer ran is recorded (see step 4).
 
-4. **Write the PLAN.** Save to `.claude/specs/<feature>/PLAN-<timestamp>.md` per the Artifact rules (`type: plan`, `source: [<PRD artifact_id>]`), plus `review: passed | with-caveats` and `reviewed_by` naming the reviewer that actually ran — `subagent` for the in-model default, or `external (<the reviewer that was named>)` when one was used; a `subagent` review is same-model and less independent, so the field lets a reader judge review strength. `blocking_open_items` = the count of unresolved blocking items carried into the plan. Then report the path, the status, the review outcome, and which reviewer ran.
+4. **Write the PLAN.** Save to `.claude/grill-me/specs/<feature>/PLAN-<timestamp>.md` per the Artifact rules (`type: plan`, `source: [<PRD artifact_id>]`), plus `review: passed | with-caveats` and `reviewed_by` naming the reviewer that actually ran — `subagent` for the in-model default, or `external (<the reviewer that was named>)` when one was used; a `subagent` review is same-model and less independent, so the field lets a reader judge review strength. `blocking_open_items` = the count of unresolved blocking items carried into the plan. Then report the path, the status, the review outcome, and which reviewer ran.
 
 <plan-template>
 

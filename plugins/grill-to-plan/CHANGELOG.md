@@ -3,6 +3,18 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [2.0.0] — 2026-06-07
+
+### Changed (breaking)
+- Renamed skills for clearer slash commands: `to-prd` → `draft-prd` and `to-plan` → `draft-plan`
+  (`grill-me` unchanged). Invoke them as `grill-to-plan:draft-prd` / `grill-to-plan:draft-plan`.
+- Artifacts now live under `.claude/grill-me/specs/<feature>/` (was `.claude/specs/<feature>/`).
+  Existing chains under the old path are not migrated automatically; move them if you want them found.
+
+### Added
+- Plugin manifest now declares `homepage`, `repository`, and `bugs` for discovery and support.
+- README: a worked end-to-end example (GRILL → PRD → PLAN) plus clearer reviewer and usage docs.
+
 ## [1.3.0] — 2026-06-07
 
 ### Changed
