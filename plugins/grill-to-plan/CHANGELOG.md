@@ -3,6 +3,17 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [2.1.0] — 2026-06-07
+
+### Added
+- Checked-in example artifact chain at `examples/report-json-flag/` (GRILL → PRD → PLAN) so users
+  can browse the formats and end-to-end traceability without running the pipeline.
+
+### Changed
+- README: documented that the skills timestamp artifacts via the Unix `date` command (on Windows,
+  run Claude Code from Git Bash or WSL). The shared "Artifact rules" block is intentionally kept
+  inline in each skill (always-needed core contract; referenced files load only on demand).
+
 ## [2.0.0] — 2026-06-07
 
 ### Changed (breaking)

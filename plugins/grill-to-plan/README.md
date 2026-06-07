@@ -99,6 +99,8 @@ Whether you commit that directory is your call; committing preserves the full li
     `codex-runner` skill and the `codex` CLI, your reviewer instruction can be
     `review via the codex-runner skill`. The plugin does **not** ship `codex-runner` — it's an
     optional, separately-installed integration, and the plugin works fully without it.
+- **Unix `date`.** The skills timestamp artifacts with `date +%Y-%m-%d-%H%M%S`. On Windows, run
+  Claude Code from a shell that provides the Unix `date` command (Git Bash or WSL).
 
 ## Design notes
 
