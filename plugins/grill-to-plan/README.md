@@ -16,7 +16,9 @@ Three skills form a pipeline:
 2. **`to-prd`** — synthesizes a **PRD** from the GRILL. It never interviews and never invents
    a decision; it fails closed, refusing to mark a PRD ready while decisions are open.
 3. **`to-plan`** — turns the PRD into a dependency-ordered **PLAN** of implementation tasks.
-   A read-only Plan architect subagent drafts it; a bounded Codex review loop hardens it.
+   A read-only Plan architect subagent drafts it; a bounded independent review loop hardens it — an
+   in-model subagent by default, or an external cross-model Codex review (via `codex-runner`) when
+   the user opts in.
 
 ## The artifact chain
 
@@ -42,10 +44,13 @@ give end-to-end traceability from any task back to the decision that justifies i
 
 ## Requirements
 
-- **`to-plan` requires the `codex-runner` skill and the `codex` CLI** for its review loop. If
-  either is unavailable, `to-plan` fails closed — it still drafts the plan but marks it
-  `draft` rather than `ready`, and reports that review could not run. `grill-me` and `to-prd`
-  have no external dependencies.
+- **`to-plan` reviews the plan with an in-model subagent by default**, so nothing leaves your
+  environment unless you ask. If the `codex-runner` skill (and `codex` CLI) is available, it can
+  instead run an external cross-model review with Codex — but only with your consent: when Codex is
+  available and the session is interactive, `to-plan` asks which reviewer to use, and falls back to
+  the subagent otherwise (absent, non-interactive, or declined). The plan records
+  `reviewed_by: codex | subagent` so a `ready` plan reflects which review it got. No skill has a
+  hard external dependency; `grill-me` and `to-prd` use none.
 
 ## Design notes
 
