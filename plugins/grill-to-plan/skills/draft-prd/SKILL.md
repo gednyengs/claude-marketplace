@@ -4,7 +4,7 @@ description: Synthesize a PRD from a GRILL decision record and save it under .cl
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 ---
 
-This skill turns a GRILL decision record into a PRD. It does NOT interview the user and never invents a decision — it synthesizes only what the GRILL (and codebase) already establish.
+This skill turns a GRILL decision record into a PRD. It does NOT interview the user and never invents a decision — it synthesizes only what the GRILL (and the code, if any) already establish.
 
 ## Artifact rules (shared across grill-me / draft-prd / draft-plan)
 
@@ -35,13 +35,13 @@ Apply these definitions exactly:
 
 ---
 
-**Source.** Resolve the feature folder (per the Artifact rules) and read its GRILL — the latest non-superseded `GRILL-*.md` unless the user names one. The live conversation may only help you *locate* the right GRILL; do not carry any decision, requirement, invariant, or assumption into the PRD unless it is in the GRILL or directly verified from the repo.
+**Source.** Resolve the feature folder (per the Artifact rules) and read its GRILL — the latest non-superseded `GRILL-*.md` unless the user names one. The live conversation may only help you *locate* the right GRILL; do not carry any decision, requirement, invariant, or assumption into the PRD unless it is in the GRILL or directly verified from the code (when a codebase exists).
 
 **Fail closed (machine-checkable).** Set the PRD `status: ready` only if the source GRILL is `status: ready` AND is the latest non-superseded GRILL for the feature. Otherwise write `status: draft`: if the GRILL has blocking Open items, add a **Missing Decisions** section listing them (never fabricate them); if the GRILL is not the latest, also set `stale: true` and warn the user loudly, naming both GRILLs. A PRD is never both `ready` and `stale`.
 
 ## Process
 
-1. Explore the repo if you haven't already. Use the project's domain glossary throughout; respect any ADRs in the area you're touching; flag a decision worth a new ADR only if the project already uses ADRs.
+1. Explore the repo if there is one and you haven't already. Use the project's domain glossary throughout; respect any ADRs in the area you're touching; flag a decision worth a new ADR only if the project already uses ADRs.
 
 2. Synthesize the template below. Assign stable IDs: requirements `R##`, invariants `I##`. For exact formal contracts, **do not restate them in prose — reference the GRILL contract by ID** (e.g. "Grammar: see GRILL `C03`"). Keep the PRD a clean behavioral summary; the GRILL holds the authoritative detail. Account for every surface in the GRILL **Surface Inventory** (`S##`): each one the GRILL marks covered by a `D##`/`C##` must be reflected here — as a requirement, invariant, contract reference, or implementation decision — or appear under **Out of Scope**; never silently dropped. Surfaces the GRILL marks `considered — no decision`/`considered — N/A` are negative-space: preserve them as such and never invent a requirement from them. Carry each decision's GRILL **provenance** through, so requirements resting on `assumed` decisions are visibly the least settled.
 

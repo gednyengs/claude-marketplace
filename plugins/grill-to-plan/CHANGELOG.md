@@ -3,6 +3,14 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [2.1.1] — 2026-06-07
+
+### Changed
+- Consistency fixes from a final read-through: `draft-plan` gained an **Open Items** section so
+  `blocking_open_items` has a referent; `draft-prd`/`draft-plan` wording no longer assumes a
+  codebase exists (greenfield parity with `grill-me`); clarified the `grill-me` recall-sweep
+  phrasing; `draft-plan` Review Summary now notes an external-reviewer → subagent fallback.
+
 ## [2.1.0] — 2026-06-07
 
 ### Added

@@ -41,7 +41,7 @@ Apply these definitions exactly:
 
 1. **Build the input bundle.** Assemble: the full PRD; the GRILL contract/decision sections (`C##`/`D##`) the PRD references; the GRILL **Surface Inventory** (`S##`, with provenance); the PRD's Assumptions and (if any) Missing Decisions; and the list of all requirement/invariant/contract/surface IDs (`R##`/`I##`/`C##`/`S##`). Every blocking item must either map to the tasks it blocks or prevent a `ready` PLAN. This bundle — not the live conversation — is the planning input.
 
-2. **Generate via the Plan architect.** Spawn the `Plan` subagent (read-only architect that explores the repo) with the input bundle. Require it to return:
+2. **Generate via the Plan architect.** Spawn the `Plan` subagent (read-only architect that explores the repo, if one exists) with the input bundle. Require it to return:
    - component decomposition and a dependency DAG;
    - build order as **vertical-slice milestones** — the first milestone must exercise the full externally-meaningful path for the smallest valid input;
    - ordered tasks `T##`, each with: scope, depends-on, acceptance criteria that **cite the source IDs** they satisfy (`R##`/`I##`/`C##`, and the `S##` surface they realize where one applies), test seam & method, rough size, and risks;
@@ -73,7 +73,7 @@ Apply these definitions exactly:
 
    Require the reviewer to classify each finding `blocking | non-blocking | style`. Only `blocking` findings trigger a revision and another round. Stop at the first clean round; **cap at 2 rounds**. If blocking findings remain after 2 rounds, write the plan `status: draft` with a review caveat and surface that the PRD/GRILL inputs are likely underspecified. Only fail closed — refuse to write a PLAN at all — if **no** reviewer can run (not even the in-model subagent); report that as a tool/infrastructure failure, not PRD/GRILL underspecification. Otherwise the review always happens, and which reviewer ran is recorded (see step 4).
 
-4. **Write the PLAN.** Save to `.claude/grill-me/specs/<feature>/PLAN-<timestamp>.md` per the Artifact rules (`type: plan`, `source: [<PRD artifact_id>]`), plus `review: passed | with-caveats` and `reviewed_by` naming the reviewer that actually ran — `subagent` for the in-model default, or `external (<the reviewer that was named>)` when one was used; a `subagent` review is same-model and less independent, so the field lets a reader judge review strength. `blocking_open_items` = the count of unresolved blocking items carried into the plan. Then report the path, the status, the review outcome, and which reviewer ran.
+4. **Write the PLAN.** Save to `.claude/grill-me/specs/<feature>/PLAN-<timestamp>.md` per the Artifact rules (`type: plan`, `source: [<PRD artifact_id>]`), plus `review: passed | with-caveats` and `reviewed_by` naming the reviewer that actually ran — `subagent` for the in-model default, or `external (<the reviewer that was named>)` when one was used; a `subagent` review is same-model and less independent, so the field lets a reader judge review strength. `blocking_open_items` = the count of unresolved blocking items carried into the plan (the **Open Items** section). Then report the path, the status, the review outcome, and which reviewer ran.
 
 <plan-template>
 
@@ -113,6 +113,10 @@ Open risks and assumptions carried into implementation.
 
 ## Review Summary
 
-`reviewed_by` (the in-model subagent, or the external reviewer that was named) and the `review` outcome, the blocking findings the reviewer raised, and how each was resolved.
+`reviewed_by` (the in-model subagent, or the external reviewer that was named) and the `review` outcome, the blocking findings the reviewer raised, and how each was resolved. If an external reviewer was requested but failed and the run fell back to the in-model subagent, note that here.
+
+## Open Items
+
+Only present when `status: draft`. The unresolved blocking items for this plan — e.g. review findings still blocking after the 2-round cap, or blockers surfaced during planning. (The source gate already prevents writing a PLAN from a PRD/GRILL that still has blocking items, so these originate at the plan stage.) This is what `blocking_open_items` counts.
 
 </plan-template>
