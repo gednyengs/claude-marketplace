@@ -22,10 +22,10 @@ Three skills form a pipeline:
 
 ## The artifact chain
 
-Every run writes an append-only, timestamped file under `.claude/grill-me/specs/<feature>/`:
+Every run writes an append-only, timestamped file under `.claude/sekekama/grill-to-plan/specs/<feature>/`:
 
 ```
-.claude/grill-me/specs/<feature>/
+.claude/sekekama/grill-to-plan/specs/<feature>/
   GRILL-<timestamp>.md   surface inventory + decisions + full formal contracts (source of truth)
   PRD-<timestamp>.md     behavioral spec; references GRILL contracts by id
   PLAN-<timestamp>.md    tasks, each citing the requirement/contract it satisfies
@@ -82,7 +82,7 @@ T01  Scope: add --json parsing + JSON emitter to report
      Size: S
 ```
 
-All three files land under `.claude/grill-me/specs/report-json-flag/`, linked by `source`/`supersedes`
+All three files land under `.claude/sekekama/grill-to-plan/specs/report-json-flag/`, linked by `source`/`supersedes`
 frontmatter — so any task (`T01`) traces back through `R01` → `D01` to the decision that justifies it.
 Whether you commit that directory is your call; committing preserves the full lineage across clones.
 

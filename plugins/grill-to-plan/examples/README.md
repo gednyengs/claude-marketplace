@@ -14,5 +14,5 @@ Trace any task back to the decision that justifies it: **`PLAN T01` → `PRD R02
 (realizing surfaces `S01`/`S02`). The files are linked by their `source` frontmatter
 (`PLAN.source = [PRD]`, `PRD.source = [GRILL]`).
 
-In a real run these live under `.claude/grill-me/specs/<feature>/`; here they're checked in as a
+In a real run these live under `.claude/sekekama/grill-to-plan/specs/<feature>/`; here they're checked in as a
 reference. They are illustrative — a real grilling session would typically surface more decisions.

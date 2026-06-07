@@ -3,6 +3,19 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [3.0.0] — 2026-06-07
+
+### Changed (breaking)
+- Artifacts now live under `.claude/sekekama/grill-to-plan/specs/<feature>/` (was
+  `.claude/grill-me/specs/<feature>/`). This adopts the shared `.claude/sekekama/<plugin>/`
+  layout used across the sekekama plugins (the same namespacing as `session-handoff`), so every
+  plugin's artifacts sit under one org-scoped directory instead of each carving its own top-level
+  `.claude/` folder.
+- Existing chains under the old path are **not migrated automatically** — move them with
+  `git mv .claude/grill-me/specs .claude/sekekama/grill-to-plan/specs` (creating
+  `.claude/sekekama/grill-to-plan/` first), or a plain `mv`, if you want them found. The skills
+  resolve features under the new path only.
+
 ## [2.1.1] — 2026-06-07
 
 ### Changed
