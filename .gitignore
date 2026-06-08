@@ -10,6 +10,9 @@
 # Claude Code local state
 .claude/
 
+# Local project instructions (not tracked)
+CLAUDE.md
+
 # Codex local state
 .codex/
 
