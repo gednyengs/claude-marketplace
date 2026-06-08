@@ -95,10 +95,11 @@ Whether you commit that directory is your call; committing preserves the full li
   plan to that external service; an external reviewer falls back to the subagent if it's
   unavailable, and the plan records `reviewed_by` so a `ready` plan reflects which review it got.
   No skill has a hard external dependency; `grill-me` and `draft-prd` use none.
-  - *Optional example (external review via a separate Codex runner):* if you have installed a
-    `codex-runner` skill and the `codex` CLI, your reviewer instruction can be
-    `review via the codex-runner skill`. The plugin does **not** ship `codex-runner` — it's an
-    optional, separately-installed integration, and the plugin works fully without it.
+  - *Optional example (external review via a separately-installed reviewer):* if you have your own
+    reviewer skill or CLI installed, your reviewer instruction can name it in plain language — for
+    example, `review via the <your-reviewer> skill`. The plugin ships **no** external reviewer of
+    its own; any such integration is optional and separately installed, and the plugin works fully
+    without one.
 - **Unix `date`.** The skills timestamp artifacts with `date +%Y-%m-%d-%H%M%S`. On Windows, run
   Claude Code from a shell that provides the Unix `date` command (Git Bash or WSL).
 
