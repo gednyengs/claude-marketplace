@@ -9,7 +9,7 @@
     "email": "7631051+gednyengs@users.noreply.github.com"
   },
   "license": "MIT",
-  "keywords": ["prd", "planning", "design", "spec", "grilling", "decision-record", "implementation-plan", "agent-ready"],
+  "keywords": ["prd", "planning", "design", "spec", "grilling", "decision-record", "implementation-plan", "agent-ready", "claude-code-plugin", "grill-to-plan", "product-requirements", "spec-driven-development", "design-review", "requirements-engineering", "adversarial-review", "technical-design", "artifact-chain", "ai-planning"],
   "homepage": "https://github.com/gednyengs/claude-marketplace/tree/main/plugins/grill-to-plan",
   "repository": "https://github.com/gednyengs/claude-marketplace"
 }

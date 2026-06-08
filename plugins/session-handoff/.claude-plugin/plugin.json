@@ -9,5 +9,5 @@
     "email": "7631051+gednyengs@users.noreply.github.com"
   },
   "license": "MIT",
-  "keywords": ["handoff", "session", "topic", "context", "resume", "compaction", "continuity"]
+  "keywords": ["handoff", "session", "topic", "context", "resume", "compaction", "continuity", "claude-code-plugin", "session-handoff", "session-management", "context-management", "context-preservation", "context-compaction", "checkpoint", "task-state", "developer-productivity", "workflow"]
 }

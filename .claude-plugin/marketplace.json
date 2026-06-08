@@ -11,6 +11,7 @@
       "name": "session-handoff",
       "source": "./plugins/session-handoff",
       "description": "Save and restore working context across Claude Code sessions, grouped by topic so continuity survives /clear, restarts, and context compaction.",
+      "keywords": ["handoff", "session", "topic", "context", "resume", "compaction", "continuity", "claude-code-plugin", "session-handoff", "session-management", "context-management", "context-preservation", "context-compaction", "checkpoint", "task-state", "developer-productivity", "workflow"],
       "category": "workflow",
       "tags": ["handoff", "session", "topic", "context", "resume", "compaction"]
     },
@@ -18,6 +19,7 @@
       "name": "grill-to-plan",
       "source": "./plugins/grill-to-plan",
       "description": "Grill a design to resolve every implementation decision, then synthesize an agent-ready PRD and dependency-ordered implementation plan as a traceable GRILL → PRD → PLAN artifact chain.",
+      "keywords": ["prd", "planning", "design", "spec", "grilling", "decision-record", "implementation-plan", "agent-ready", "claude-code-plugin", "grill-to-plan", "product-requirements", "spec-driven-development", "design-review", "requirements-engineering", "adversarial-review", "technical-design", "artifact-chain", "ai-planning"],
       "category": "workflow",
       "tags": ["prd", "planning", "design", "spec", "grilling", "implementation-plan"]
     }
