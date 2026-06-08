@@ -10,7 +10,7 @@ topic_title: "<Human-readable title>"     # may be refined later without renamin
 session_id: <sid>                         # originating session (provenance + collision-avoidance)
 created: <YYYY-MM-DDThh:mm:ss±zz:zz>
 kind: manual                              # manual | auto
-note: "<optional one-line checkpoint note>"
+note: "<optional one-line label the writer may add; not the /save note, which is folded into the body>"
 depends_on:                               # optional; cross-topic handoff ids only
   - <other-topic>/<timestamp>-<sid>
 ---

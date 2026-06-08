@@ -40,12 +40,16 @@ for when the user asks in natural language. The behavior is the same.
 2. Resolve the destination and frontmatter: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/new-path.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" [note] [--topic <slug>]`.
    It prints the exact `PATH`, the resolved `TOPIC`, a **verbatim frontmatter block** (with any
    cross-topic `depends_on` already filled in), and possibly a `NOTICE:`. The topic comes from
-   `--topic`, else this session's recorded topic, else a new one derived from the note.
+   `--topic`, else this session's recorded topic, else a new timestamped topic (pass `--topic` to
+   name one). Any note you pass is relayed back as an `ADDITIONAL CONTEXT` block: extra information
+   to reflect in the handoff body; it does not name the topic.
 3. Write the file to that exact `PATH`, starting with the verbatim frontmatter block (you may
    refine `topic_title`), then the body sections from `templates/HANDOFF_TEMPLATE.md`:
    Task & progress · Key decisions & rationale · Open questions & blockers · Next steps ·
    Environment & commands · Repo snapshot · Resume instructions. Be concise but specific
-   (paths, names, exact commands). **Never write secrets, tokens, or credentials.**
+   (paths, names, exact commands). **Never write secrets, tokens, or credentials.** If an
+   `ADDITIONAL CONTEXT` block was printed, fold that user-provided information into the relevant
+   section(s), without changing the required sections or the frontmatter.
 4. Commit the side effects: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/save-record.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" <PATH> <TOPIC>` — records
    the session's topic, refreshes the per-directory pointer, clears consumed pending state. Run this
    only **after** the file is written; it verifies the handoff at `<PATH>` before recording, so

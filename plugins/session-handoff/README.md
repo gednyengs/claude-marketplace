@@ -36,16 +36,21 @@ Pick it back up later, even in a brand-new session after `/clear`:
 ```
 
 `resume` works out the right topic on its own, recaps the task, and asks how you want to proceed.
-You can also just talk to it in plain language ("save a handoff", "where did we leave off?") and
-the bundled skill runs the same workflow.
+
+You don't have to type the commands. You can also trigger the same workflow by telling the agent
+what you want in plain language, for example "save a handoff" or "where did we leave off?". The
+bundled skill picks it up and runs the matching command.
 
 ## Commands
 
 ### `/session-handoff:save [note] [--topic <slug>]`
 
 Capture the current session to a new handoff. It takes a project snapshot first (git state plus
-detected build, test, and run commands), then writes a structured handoff. If you don't name a
-topic, it reuses the session's current topic, or starts a new one seeded from your note.
+detected build, test, and run commands), then writes a structured handoff. If you don't pass
+`--topic`, it reuses the topic your session is already on, or starts a new timestamped one if the
+session doesn't have a topic yet (pass `--topic` to name a new topic). An optional note is handed to
+the agent as extra information to reflect in the handoff, for example a detail or fact to preserve, a
+constraint, or something to emphasize. It informs the content; it does not name the topic.
 
 ### `/session-handoff:resume [--auto] [<id|topic>]`
 

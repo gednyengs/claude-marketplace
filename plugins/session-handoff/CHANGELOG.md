@@ -3,6 +3,27 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [3.0.0] — 2026-06-08
+
+Breaking change to the optional `/save` note. The note is now **extra context the agent folds into
+the handoff** instead of a way to name the topic. Because `/save "some text"` now does something
+different, this is a major bump; the on-disk layout and frontmatter schema are unchanged.
+
+### Breaking
+- **`/save [note]` no longer names the topic.** A note passed to `/save` is relayed to the model as
+  an `ADDITIONAL CONTEXT` block: extra information the user wants reflected in the handoff (a detail
+  or fact to preserve, a constraint to record, or something to emphasize). It is no longer used to
+  derive the topic slug or title, and it is no longer written into the handoff frontmatter. A new
+  unnamed topic now always gets a `topic-<timestamp>` slug, and the model refines that into a human
+  `topic_title` from the conversation (as it already did). Pass `--topic <slug>` to name a topic.
+  The relayed note is delimited and flagged as user content, so it is not interpreted as workflow
+  instructions.
+
+### Migration
+- If you relied on `/save "some text"` to name a new topic, pass `--topic some-slug` instead.
+  Existing handoffs and topics are unaffected; the on-disk layout and frontmatter schema are the
+  same (the optional `note` field simply stops being auto-populated).
+
 ## [2.1.0] — 2026-06-08
 
 Bug-fix + maintenance release. **No change to behavior, commands, on-disk layout, or frontmatter** —

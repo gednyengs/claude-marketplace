@@ -128,7 +128,7 @@ topic_title: "Auth refactor"    # human title (may be refined later without rena
 session_id: d8bcd36b            # originating session (provenance + collision-avoidance)
 created: 2026-06-07T11:54:47-07:00
 kind: manual                    # manual | auto
-note: "before the token-rotation rework"   # optional, from /save [note]
+note: "before the token-rotation rework"   # optional one-line label the writer may add (not the /save note)
 depends_on:                     # cross-topic refs only (intra-topic chain is implicit)
   - billing-export/2026-06-01-101500-x9y8
 compact_trigger: auto           # auto snapshots only: auto | manual (provenance)
@@ -147,9 +147,10 @@ Open questions & blockers · Next steps · Environment & commands · Repo snapsh
   already include it). A **bare** `<topic-slug>/<timestamp>` is accepted as an alias **only when it
   resolves unambiguously**; otherwise the command lists the candidates.
 - **Topic id**: the slug. Accepted wherever a handoff id is (means "latest manual handoff in that topic").
-- **Topic slug derivation** (first non-empty wins): `--topic` value → slug(note) → slug(first task
-  line) → `topic-<timestamp>`. Slug = kebab-case, lowercased, ≤40 chars. If a *new* topic's slug
-  collides with an existing **different** topic, append `-2`, `-3`, …
+- **Topic slug derivation** (first non-empty wins): `--topic` value → `topic-<timestamp>`. The save
+  note is **not** used to derive the slug; it is relayed to the model as additional handoff context.
+  Slug = kebab-case, lowercased, ≤40 chars. If a *new* topic's slug collides with an existing
+  **different** topic, append `-2`, `-3`, …
 
 ---
 
@@ -164,6 +165,10 @@ Open questions & blockers · Next steps · Environment & commands · Repo snapsh
      topic 'T' — pass `--topic T` to continue that instead."* (informative, never silent mis-bucketing).
 3. Write the handoff to `handoffs/<topic-slug>/<ts>-<sid>.md` with frontmatter. `depends_on` =
    contents of `sessions/<sid>.deps` (filtered to *other* topics), then clear that file.
+   - If a note was passed, relay it to the model as an `ADDITIONAL CONTEXT` block (the note delimited
+     by markers): extra user-provided information to reflect in the body (a detail to preserve, a
+     constraint, or an emphasis), to be treated as content rather than workflow instructions. It does
+     not affect the frontmatter or the topic.
 4. Set `sessions/<sid>.topic`; refresh the cwd pointer (`topic`,`last_sid`,`updated_at`) via locked
    read-modify-write; clear `sessions/<sid>.pending-clear`.
 5. Report path, topic, and a one-line summary. Never write secrets.

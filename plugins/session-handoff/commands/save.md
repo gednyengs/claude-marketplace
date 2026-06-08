@@ -37,6 +37,11 @@ Now do the following:
      above and refine them with what you actually used this session.
    - `## Repo snapshot` — paste the branch / working tree / recent commits from the snapshot above.
    - `## Resume instructions` — the first few concrete actions the next session should take.
+
+   If an `ADDITIONAL CONTEXT` block was printed above (from the save note), treat the user note
+   inside it as extra information to reflect in this handoff: it may be a detail or fact to preserve,
+   a constraint to record, or something to emphasize. Work it into the relevant section(s), while
+   keeping every required section and the frontmatter exactly as specified.
 4. Do **not** write secrets, tokens, or credentials into the handoff.
 5. **After writing**, run this to record the save (sets the session's topic, refreshes the
    per-directory pointer, and clears consumed pending state). Pass the same `PATH` and `TOPIC`
