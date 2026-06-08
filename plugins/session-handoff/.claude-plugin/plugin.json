@@ -6,7 +6,7 @@
   "description": "Save and restore working context across Claude Code sessions, grouped by topic so continuity survives /clear, restarts, and context compaction. Captures task state, decisions, blockers, next steps, and environment commands into version-controlled, topic-organized handoff files.",
   "author": {
     "name": "Gedeon Nyengele",
-    "email": "7631051+gednyengs@users.noreply.github.com"
+    "url": "https://github.com/gednyengs"
   },
   "license": "MIT",
   "keywords": ["handoff", "session", "topic", "context", "resume", "compaction", "continuity", "claude-code-plugin", "session-handoff", "session-management", "context-management", "context-preservation", "context-compaction", "checkpoint", "task-state", "developer-productivity", "workflow"]
