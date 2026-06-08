@@ -10,7 +10,7 @@ across the whole project. An optional number caps how many rows are shown (defau
 
 Handoffs:
 
-!`"${CLAUDE_PLUGIN_ROOT}"/scripts/list.sh $ARGUMENTS`
+!`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/list.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" $ARGUMENTS`
 
 Present the list to the user as-is (it is read-only). Remind them they can:
 - `/session-handoff:resume <id|topic>` to resume a topic and continue it, or

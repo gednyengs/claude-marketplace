@@ -10,13 +10,13 @@ reader with **zero memory** of this conversation.
 
 Deterministic project snapshot (gathered for you just now):
 
-!`"${CLAUDE_PLUGIN_ROOT}"/scripts/snapshot.sh`
+!`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}"`
 
 Destination path and the exact frontmatter to use (topic already resolved from
 `--topic`, this session's topic, or a new one — and any cross-topic `depends_on`
 already computed for you):
 
-!`"${CLAUDE_PLUGIN_ROOT}"/scripts/new-path.sh $ARGUMENTS`
+!`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/new-path.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" $ARGUMENTS`
 
 Now do the following:
 
@@ -43,7 +43,7 @@ Now do the following:
    printed above — the script verifies the file before recording, so use the exact values:
 
    ```
-   "${CLAUDE_PLUGIN_ROOT}"/scripts/save-record.sh <PATH> <TOPIC>
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/save-record.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" <PATH> <TOPIC>
    ```
 
 6. Print the relative path, the topic, and a 3–5 bullet summary of what you captured. **If a

@@ -12,7 +12,7 @@ cross-topic reference.
 
 Loaded handoff:
 
-!`"${CLAUDE_PLUGIN_ROOT}"/scripts/load.sh $ARGUMENTS`
+!`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/load.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" $ARGUMENTS`
 
 Then:
 - If a handoff was loaded (output starts with `Source:`): briefly summarize what it covers

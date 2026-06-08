@@ -1,6 +1,6 @@
 <!--
 Frontmatter is the source of truth (topic, provenance, cross-topic links). Use the exact
-block printed by new-path.sh; the fields below show the schema. `note` and `depends_on` are
+block printed by new-path.py; the fields below show the schema. `note` and `depends_on` are
 optional — omit them when empty.
 -->
 ---
@@ -58,7 +58,7 @@ current working state. Start from the auto-detected commands and refine.
 ## Repo snapshot
 
 <!--
-Branch, working-tree status, and recent commits (from snapshot.sh).
+Branch, working-tree status, and recent commits (from snapshot.py).
 -->
 
 ## Resume instructions

@@ -35,9 +35,9 @@ for when the user asks in natural language. The behavior is the same.
 
 ## Saving a handoff
 
-1. Gather a deterministic snapshot: `"${CLAUDE_PLUGIN_ROOT}"/scripts/snapshot.sh` — git branch,
-   working tree, recent commits, and detected build/test/run commands. Use it as ground truth.
-2. Resolve the destination and frontmatter: `"${CLAUDE_PLUGIN_ROOT}"/scripts/new-path.sh [note] [--topic <slug>]`.
+1. Gather a deterministic snapshot: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/snapshot.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}"` —
+   git branch, working tree, recent commits, and detected build/test/run commands. Use it as ground truth.
+2. Resolve the destination and frontmatter: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/new-path.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" [note] [--topic <slug>]`.
    It prints the exact `PATH`, the resolved `TOPIC`, a **verbatim frontmatter block** (with any
    cross-topic `depends_on` already filled in), and possibly a `NOTICE:`. The topic comes from
    `--topic`, else this session's recorded topic, else a new one derived from the note.
@@ -46,22 +46,22 @@ for when the user asks in natural language. The behavior is the same.
    Task & progress · Key decisions & rationale · Open questions & blockers · Next steps ·
    Environment & commands · Repo snapshot · Resume instructions. Be concise but specific
    (paths, names, exact commands). **Never write secrets, tokens, or credentials.**
-4. Commit the side effects: `"${CLAUDE_PLUGIN_ROOT}"/scripts/save-record.sh <PATH> <TOPIC>` — records
+4. Commit the side effects: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/save-record.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" <PATH> <TOPIC>` — records
    the session's topic, refreshes the per-directory pointer, clears consumed pending state. Run this
    only **after** the file is written; it verifies the handoff at `<PATH>` before recording, so
    pending cross-topic links are never lost on an abort.
-5. Report the path, the topic, and a short summary. If `new-path.sh` printed a `NOTICE:`, relay
+5. Report the path, the topic, and a short summary. If `new-path.py` printed a `NOTICE:`, relay
    it — it means a new topic was started while a recently-cleared topic was still resumable.
 
 ## Resuming from a handoff
 
-1. Run `"${CLAUDE_PLUGIN_ROOT}"/scripts/resume.sh [--auto] [<id|topic>]`. Its output is one of four shapes:
+1. Run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/resume.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" [--auto] [<id|topic>]`. Its output is one of four shapes:
    - **A handoff was loaded** (`Source:` … with a `(topic: … — how)` tag): resolved from this
      session's topic, a post-`/clear` baton, the only recent topic, or your explicit id/topic.
      The script has already recorded the topic. Valid to resume — don't treat it as suspicious.
    - **A picker** (`PICK:` + a numbered topic list, each with an `id:`): no topic for this session
      and several exist. Present it and ask which number (or take entry 1 when continuing
-     automatically), then load the choice by re-running `resume.sh <id>`.
+     automatically), then load the choice by re-running `resume.py` (as in step 1) with that id.
    - **No handoff found**: tell the user and offer `/session-handoff:save`.
    - **No match** (`_No handoff matches …_`): the requested id/topic didn't resolve; suggest
      `/session-handoff:list --any`.
@@ -71,11 +71,11 @@ for when the user asks in natural language. The behavior is the same.
 
 ## Loading & listing
 
-- `"${CLAUDE_PLUGIN_ROOT}"/scripts/load.sh <id|topic>` — pull **any** topic's handoff into context
+- `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/load.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" <id|topic>` — pull **any** topic's handoff into context
   for reference *without* changing the session's current topic. If it's a different topic, its id
   is recorded so the next save notes it as a `depends_on`. Summarize what it covers and how it
   relates; don't switch tasks unless asked.
-- `"${CLAUDE_PLUGIN_ROOT}"/scripts/list.sh [MAX] [--any]` — list handoffs in the current topic, or
+- `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/list.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" [MAX] [--any]` — list handoffs in the current topic, or
   with `--any` the latest per topic across the project. Read-only; each row's `id` feeds `load`/`resume`.
 
 Ids are `<topic>/<timestamp>-<session>`; a bare topic slug also works and means "the latest handoff

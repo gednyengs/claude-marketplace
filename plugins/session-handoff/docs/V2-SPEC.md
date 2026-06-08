@@ -1,11 +1,27 @@
 # Session Handoff v2 — Design Spec
 
-**Status:** design, not yet implemented · **Target version:** 2.0.0 (breaking) · **Drafted:** 2026-06-07
+**Status:** implemented · **Versions:** 2.0.0 (topic redesign) → 2.1.0 (Python port + cwd fix) · **Drafted:** 2026-06-07
 
 **Revision 2 (2026-06-07):** hardened the cwd-baton and ephemeral-state lifecycle after an external
 (Codex) review — explicit `cleared_topic`, an append-only pending-clear log with claim semantics,
 age-based GC instead of GC-on-exit, line-oriented (jq-free) state, atomic/locked shared writes, and
 sid-qualified ids. See [Appendix B](#appendix-b--review-changelog).
+
+**Revision 3 (2026-06-08, v2.1.0):** the support scripts were rewritten from bash to Python
+(standard library only; `scripts/*.sh` → `scripts/*.py`, run as `python3 .../X.py`). On-disk formats
+are unchanged. Two changes to how the project root is found:
+- **Project dir is captured from an explicit `--project-dir "${CLAUDE_PROJECT_DIR}"` argument** passed
+  on *every* invocation line — hooks, command `!`-lines, and the model-run body commands. Claude Code
+  text-substitutes `${CLAUDE_PROJECT_DIR}`/`${CLAUDE_PLUGIN_ROOT}` throughout plugin content but does
+  **not** export them into the `!`-injection subprocess, so the old internal `${CLAUDE_PROJECT_DIR:-$(pwd)}`
+  env lookup fell back to a drifted `pwd` and wrote artifacts under a subdirectory. There is no
+  env/walk-up/git/pwd recovery: a missing value errors in command scripts and is a no-op in hooks.
+- **State dir is resolved identically** via a uniform `--plugin-data "${CLAUDE_PLUGIN_DATA}"` so
+  ephemeral state can't split between out-of-repo and in-repo across hook vs. command contexts.
+
+Because the scripts are Python, **`jq` is no longer used** (`json` parses hook stdin and `package.json`);
+the §1 "graceful degradation" note about `jq` and the §2/§3 "jq-free" remarks now refer to the design
+intent (line-oriented state), satisfied natively by the stdlib.
 
 This spec defines the topic-based redesign of the session-handoff plugin. It is grounded in
 empirically verified Claude Code session-lifecycle behavior (see [Appendix A](#appendix-a--verified-lifecycle-facts)).

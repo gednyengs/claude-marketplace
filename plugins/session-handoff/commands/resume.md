@@ -9,7 +9,7 @@ work that spans many sessions (across `/clear`, restarts, and compaction).
 
 Resolution result:
 
-!`"${CLAUDE_PLUGIN_ROOT}"/scripts/resume.sh $ARGUMENTS`
+!`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/resume.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" $ARGUMENTS`
 
 The script output is one of four shapes. Determine which, then act:
 
@@ -31,8 +31,8 @@ loaded or recorded yet.
 - Otherwise: present the numbered list (time · title · summary) and **ask which number to
   resume**.
 - Once a choice is made, load it by re-running the command with that entry's id:
-  `"${CLAUDE_PLUGIN_ROOT}"/scripts/resume.sh <id>` (this records the topic). Then recap it as
-  in case A. Do not execute any next steps until a topic is chosen.
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/resume.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" <id>`
+  (this records the topic). Then recap it as in case A. Do not execute any next steps until a topic is chosen.
 
 **C. No handoff exists** (output is `_No handoff found …_`). Tell the user and offer to create
 one with `/session-handoff:save`.

@@ -3,6 +3,34 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [2.1.0] — 2026-06-08
+
+Bug-fix + maintenance release. **No change to behavior, commands, on-disk layout, or frontmatter** —
+existing handoffs and ephemeral state keep working unchanged. The support scripts are rewritten from
+bash to Python (standard library only), which also fixes a path-resolution bug.
+
+### Fixed
+- **Handoffs no longer land in the wrong directory.** The scripts computed the project root from
+  `${CLAUDE_PROJECT_DIR:-$(pwd)}`, but Claude Code does not export `CLAUDE_PROJECT_DIR` into the
+  command/`!`-injection subprocess (it text-substitutes the token into the command line, and only
+  *hooks* get the env var). So `/save` (and `resume`/`load`/`list`) fell back to `pwd` — often a
+  drifted **subdirectory** — and wrote handoffs and `.state/` pointers under
+  `<repo>/<subdir>/.claude/sekekama/session-handoff/` instead of the repo root. The project dir is
+  now captured from an explicit `--project-dir "${CLAUDE_PROJECT_DIR}"` argument passed on every
+  invocation line (hooks, `!`-lines, and model-run body commands), so resolution is correct
+  regardless of the shell's working directory. A missing/invalid value errors loudly in command
+  scripts and is a no-op in hooks — never a silent wrong-directory write.
+- The ephemeral **state directory** is resolved the same way (uniform `--plugin-data`), so it can
+  never split between an out-of-repo and an in-repo location across hook vs. command contexts.
+
+### Changed
+- **Scripts rewritten from bash to Python** (`scripts/*.sh` → `scripts/*.py`), invoked as
+  `python3 .../X.py …`. Pure standard library — **`jq` is no longer used at all** (`json` parses hook
+  payloads and `package.json` directly), and the `sha1`/date/locking helpers use `hashlib`/`datetime`/
+  `fcntl`. On-disk formats (filenames, frontmatter, ephemeral state, cwd-hash) are byte-compatible.
+- **Requirements:** `python3` (replaces `bash`); `git` remains optional (repo snapshot only); `jq`
+  is no longer needed.
+
 ## [2.0.0] — 2026-06-07
 
 Topic-based redesign. The unit of continuity is now a **topic** — a thread of work that

@@ -79,10 +79,10 @@ Four hooks protect context without you asking:
 
 | Hook | Event | What it does |
 | --- | --- | --- |
-| `session-start.sh` | **SessionStart** | Source-aware: `resume` → no-op (transcript already restored); `compact` → a concise continue-nudge (auto) or light pointer (manual) to the snapshot; `clear` → recaps the topic you just cleared and offers `/resume` (or a picker if clears are ambiguous); `startup` → a short list of recent topics. Output capped; never silently adopts a topic. |
-| `session-end.sh` | **SessionEnd** | On `/clear`, leaves a per-directory "baton" carrying the cleared session's own topic so the next session can pick it back up. No eager deletion — state is reclaimed by age. |
-| `precompact.sh` | **PreCompact** | Writes a deterministic safety snapshot to the session's topic before compaction and asks Claude to enrich it (emphasizing the in-flight step) while it still has full context. |
-| `enforce.sh` | **Stop** | If the session's latest auto-snapshot still has `<!-- TODO -->` placeholders, nudges Claude (at most twice) to finish it, then gets out of the way. |
+| `session-start.py` | **SessionStart** | Source-aware: `resume` → no-op (transcript already restored); `compact` → a concise continue-nudge (auto) or light pointer (manual) to the snapshot; `clear` → recaps the topic you just cleared and offers `/resume` (or a picker if clears are ambiguous); `startup` → a short list of recent topics. Output capped; never silently adopts a topic. |
+| `session-end.py` | **SessionEnd** | On `/clear`, leaves a per-directory "baton" carrying the cleared session's own topic so the next session can pick it back up. No eager deletion — state is reclaimed by age. |
+| `precompact.py` | **PreCompact** | Writes a deterministic safety snapshot to the session's topic before compaction and asks Claude to enrich it (emphasizing the in-flight step) while it still has full context. |
+| `enforce.py` | **Stop** | If the session's latest auto-snapshot still has `<!-- TODO -->` placeholders, nudges Claude (at most twice) to finish it, then gets out of the way. |
 
 Even an unattended session that hits auto-compaction leaves behind a usable handoff with real
 git/environment facts.
@@ -116,7 +116,7 @@ The first time v2 runs (any command or a new session), it **copies** legacy `.ha
 into the `legacy` topic at `.claude/sekekama/session-handoff/handoffs/legacy/`, synthesizing
 schema-2 frontmatter from each filename. The migration is idempotent and copy-before-delete:
 your originals are left untouched and a `.handoff/README.md` tombstone points to the new
-location. Run it by hand any time with `scripts/migrate.sh`. Delete `.handoff/` once you've
+location. Run it by hand any time with `scripts/migrate.py`. Delete `.handoff/` once you've
 confirmed the move; browse the result with `/session-handoff:list --any` or
 `/session-handoff:resume legacy`.
 
@@ -145,11 +145,12 @@ Then restart or run `/reload-plugins`. Verify with `/plugin validate`.
 - **Low always-on cost.** The plugin only touches context at the moments it's actually at risk
   — compaction, session start/end — plus deliberate `/save`, `/resume`, `/load`, `/list`. That
   keeps per-turn token overhead near zero.
-- **Deterministic first, model second.** Git state and build commands are gathered by shell
+- **Deterministic first, model second.** Git state and build commands are gathered by the
   scripts (ground truth); the model fills the judgment sections. The PreCompact snapshot is
   useful even if the model never enriches it.
-- **No `jq` dependency.** Ephemeral state is line-oriented, so the plugin never requires `jq`;
-  it's used only when present to enrich command detection.
+- **Pure standard library.** The scripts are `python3` stdlib only — `json` parses hook payloads
+  and `package.json` directly, so there is no `jq` dependency and ephemeral state stays
+  line-oriented. The only external tool is `git` (for the repo snapshot), and it degrades gracefully.
 - **No loops, no nagging.** Stop-hook enforcement is gated on unfilled auto-snapshots and
   capped at two attempts via a per-session counter.
 - **Team-friendly.** Timestamped, session-tagged per-handoff files avoid the merge conflicts a
@@ -172,8 +173,8 @@ When compacting, preserve:
 ## Requirements
 
 - Claude Code CLI
-- `bash` and `git`
-- `jq` (optional — enriches build/command detection; never required for state)
+- `python3` (the plugin's scripts are pure standard library — no third-party packages)
+- `git` (optional — enriches the repo snapshot; the plugin degrades gracefully without it)
 
 ## License
 

@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "session-handoff",
   "displayName": "Session Handoff",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Save and restore working context across Claude Code sessions, grouped by topic so continuity survives /clear, restarts, and context compaction. Captures task state, decisions, blockers, next steps, and environment commands into version-controlled, topic-organized handoff files.",
   "author": {
     "name": "Gedeon Nyengele",
