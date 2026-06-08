@@ -33,6 +33,15 @@ The choices that matter and *why*, so they aren't relitigated next session.
 - Decision — rationale
 -->
 
+## Approaches tried & dead ends
+
+<!--
+OPTIONAL. Include this section only when you hit attempts that would be expensive or tempting for the
+next session to repeat: list what was tried and why it failed or was abandoned. Omit the whole section
+(heading included) when there were no such dead ends.
+- Tried X -> failed because Y
+-->
+
 ## Open questions & blockers
 
 <!--
@@ -48,11 +57,12 @@ An ordered, actionable checklist. The first item should be unambiguous.
 2. …
 -->
 
-## Environment & commands
+## Environment, commands & results
 
 <!--
-How to build / test / run, required env vars, setup steps, and how to reproduce the
-current working state. Start from the auto-detected commands and refine.
+How to build / test / run, required env vars, and setup. Start from the auto-detected commands and
+refine with what you actually ran this session. Also record meaningful pass/fail results or
+measurements, and the paths to any data files or artifacts the next session needs (JSON, CSV, logs).
 -->
 
 ## Repo snapshot

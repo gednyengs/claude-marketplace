@@ -30,11 +30,15 @@ Now do the following:
    - `# Handoff — <human-readable date/time>`
    - `## Task & progress` — the goal; what's done; what's in progress; what's not started.
    - `## Key decisions & rationale` — important choices and *why*, so they aren't relitigated.
+   - `## Approaches tried & dead ends` — OPTIONAL: include this section only if you hit attempts that
+     would be expensive or tempting to repeat (what was tried, why it failed or was abandoned). Omit
+     the section entirely when there were none.
    - `## Open questions & blockers` — unresolved questions, things waiting on input, known risks.
    - `## Next steps` — an ordered, actionable checklist of what to do next.
-   - `## Environment & commands` — how to build/test/run, env vars, setup, and how to
-     reproduce the current working state. Start from the detected commands in the snapshot
-     above and refine them with what you actually used this session.
+   - `## Environment, commands & results` — how to build/test/run, env vars, and setup. Start from
+     the detected commands in the snapshot above and refine them with what you actually ran this
+     session. Also record meaningful pass/fail results or measurements, and paths to any data files
+     or artifacts the next session needs (JSON, CSV, logs).
    - `## Repo snapshot` — paste the branch / working tree / recent commits from the snapshot above.
    - `## Resume instructions` — the first few concrete actions the next session should take.
 

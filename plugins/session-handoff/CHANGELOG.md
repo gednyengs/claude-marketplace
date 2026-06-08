@@ -3,6 +3,25 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [3.1.0] — 2026-06-08
+
+Additive capture improvements: an optional dead-ends section and a richer environment section. No
+breaking changes; the on-disk layout and frontmatter schema are unchanged.
+
+### Added
+- **Optional `## Approaches tried & dead ends` section.** When a session hit attempts that would be
+  expensive or tempting to repeat, the handoff now records what was tried and why it failed, so the
+  next session doesn't rediscover the dead end. It is included only when there are such attempts and
+  omitted otherwise.
+
+### Changed
+- **`## Environment & commands` is now `## Environment, commands & results`.** Beyond build/test/run
+  commands, it also captures the commands actually run this session, meaningful pass/fail results or
+  measurements, and paths to data files or artifacts the next session needs. The deterministic
+  snapshot (`snapshot.py`) emits the new heading, so manual saves and auto-snapshots stay consistent.
+- **README:** the "What it captures" list now includes `Resume instructions` (previously omitted)
+  alongside the two items above.
+
 ## [3.0.0] — 2026-06-08
 
 Breaking change to the optional `/save` note. The note is now **extra context the agent folds into

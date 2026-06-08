@@ -135,8 +135,9 @@ compact_trigger: auto           # auto snapshots only: auto | manual (provenance
 ---
 ```
 
-Body sections (unchanged intent from v1): Task & progress · Key decisions & rationale ·
-Open questions & blockers · Next steps · Environment & commands · Repo snapshot · Resume instructions.
+Body sections: Task & progress · Key decisions & rationale · Open questions & blockers · Next steps ·
+Environment, commands & results · Repo snapshot · Resume instructions, plus an optional
+"Approaches tried & dead ends" section included only when there were attempts worth not repeating.
 
 ---
 

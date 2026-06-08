@@ -77,11 +77,16 @@ Each handoff records:
 
 - **Task & progress**: the goal, and what's done, in progress, and not started.
 - **Key decisions & rationale**: so settled questions don't get reopened.
+- **Approaches tried & dead ends** (when relevant): attempts that failed or were abandoned, so the
+  next session doesn't waste time repeating them.
 - **Open questions & blockers**: what's unresolved or waiting on input.
 - **Next steps**: an ordered checklist you can act on.
-- **Environment & commands**: how to build, test, and run, auto-detected from `package.json`,
-  `Makefile`, `pyproject.toml`, `Cargo.toml`, `go.mod`, Gradle, Maven, and more.
+- **Environment, commands & results**: how to build, test, and run (auto-detected from
+  `package.json`, `Makefile`, `pyproject.toml`, `Cargo.toml`, `go.mod`, Gradle, Maven, and more),
+  plus the commands you actually ran, meaningful results or measurements, and paths to any data
+  files or artifacts the next session needs.
 - **Repo snapshot**: branch, working-tree status, and recent commits.
+- **Resume instructions**: the first concrete actions to take when picking the work back up.
 
 Handoffs you save by hand are plain Markdown meant to be committed with your repo, so they travel
 well for async work and team handoffs.

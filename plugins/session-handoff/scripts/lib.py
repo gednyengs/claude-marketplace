@@ -861,7 +861,7 @@ def facts():
     else:
         out.append("- _Not a git repository._")
     out.append("")
-    out.append("## Environment & commands")
+    out.append("## Environment, commands & results")
     out.append("")
     out.append(detect_commands())
     return "\n".join(out)
