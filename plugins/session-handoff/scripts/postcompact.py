@@ -10,6 +10,7 @@
 # stashed path because SessionStart(source=compact) — which runs *before* us —
 # has already cleared the compaction stash.
 import os
+import re
 import sys
 import time
 
@@ -19,8 +20,43 @@ import lib  # noqa: E402
 WRAP_HEADER = "## Compaction summary (auto-generated)"
 
 
+def clean_summary(s):
+    """Extract the handoff content from Claude Code's compaction summary.
+
+    Claude Code emits the summary wrapped as
+        <analysis>...chain-of-thought...</analysis>
+        <summary>...the 9-section handoff...</summary>
+    We persist only the <summary> body; the <analysis> block is meta-reasoning.
+
+    Resolution, robust to format drift and truncation:
+      1. Strip only a *leading* <analysis>...</analysis> wrapper — anchored at the
+         start, where Claude Code always emits it — so a stray '<summary>' quoted
+         inside that wrapper can't fool the extractor, while a closed
+         '<analysis>...</analysis>' pair the summary *itself* quotes is left intact.
+         Then return the <summary> body, matching from the first '<summary>' opener
+         to the *last* '</summary>' closer (greedy) so a literal '<summary>...
+         </summary>' pair quoted inside the body is preserved — Claude Code emits a
+         single outer wrapper. Extraction is unanchored, so it still works if a
+         future version prepends a preamble before <analysis>.
+      2. No usable <summary>: if what remains begins with an unclosed '<analysis'
+         (chain-of-thought truncated before any summary), persist nothing — return
+         "" so body() keeps the pending skeleton rather than store raw CoT.
+      3. Otherwise treat the remainder as an un-tagged summary (a future/un-wrapped
+         format) and return it, with any dangling <summary> tags stripped.
+    """
+    s = s or ""
+    body = re.sub(r"^\s*<analysis\b.*?</analysis>\s*", "", s, flags=re.S | re.I)
+    m = re.search(r"<summary>(.*)</summary>", body, re.S | re.I)
+    if m and m.group(1).strip():
+        return m.group(1).strip()
+    rest = body.strip()
+    if re.match(r"<\s*analysis\b", rest, re.I):
+        return ""
+    return re.sub(r"</?summary>", "", rest, flags=re.I).strip()
+
+
 def compose(fm_lines, summary, trigger):
-    note = ("> Persisted verbatim from Claude Code's compaction summary "
+    note = ("> Persisted from Claude Code's compaction summary "
             "(trigger: %s) so it survives /clear and restarts." % trigger)
     body = [
         "# Handoff — " + lib.iso(),
@@ -43,7 +79,7 @@ def body():
         return
     sid = lib.session_short(payload)
     trigger = lib.payload_field(payload, "trigger") or "auto"
-    summary = lib.payload_field(payload, "compact_summary")
+    summary = clean_summary(lib.payload_field(payload, "compact_summary"))
     if not summary.strip():
         return  # nothing to persist
 

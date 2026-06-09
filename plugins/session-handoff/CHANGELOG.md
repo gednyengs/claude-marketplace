@@ -16,7 +16,10 @@ on-disk layout is unchanged and old handoffs remain readable.
   pre-compaction snapshot as the handoff body, flipping the snapshot's `status` from `pending` to
   `complete`. That summary is what Claude Code injects in-context after compaction; persisting it
   makes the content survive `/clear`, restarts, and new sessions. If compaction skipped PreCompact
-  (reactive prompt-too-long compaction), PostCompact creates a completed handoff from scratch.
+  (reactive prompt-too-long compaction), PostCompact creates a completed handoff from scratch. Only
+  the `<summary>` portion is kept — Claude Code's summary arrives wrapped as
+  `<analysis>…</analysis><summary>…</summary>` and does *not* strip the analysis itself, so PostCompact
+  drops that chain-of-thought and persists just the clean 9-section handoff.
 - **`Files & code touched` section** in the manual handoff template, plus a verbatim in-flight quote
   requirement in `Next steps`, to reduce drift when resuming mid-edit.
 - **Auto-snapshot frontmatter** now carries `status` (`pending`/`complete`) and `compact_trigger`

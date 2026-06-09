@@ -295,12 +295,16 @@ mid-stream is explicitly out of scope; the slug is cosmetic, the title carries r
 ### 8.4 PostCompact
 
 Runs after Claude Code generates the compaction summary; receives `{trigger, compact_summary}`.
-Persists the summary as the durable handoff body so it survives `/clear` (Claude Code's in-context
-copy does not).
+`compact_summary` arrives as `<analysis>…chain-of-thought…</analysis><summary>…9-section
+handoff…</summary>` — Claude Code strips the "session continued" preamble but **not** the `<analysis>`
+block (verified live against v2.1.169). PostCompact extracts the `<summary>` body — dropping the
+`<analysis>` CoT and the XML tags (defensive: if the wrapper is ever absent it falls back to the
+de-analyzed text, then the raw text, so the summary is never lost) — and persists that as the durable
+handoff body so it survives `/clear` (Claude Code's in-context copy does not).
 
 1. Locate this session's latest auto-snapshot. If it is `status: pending` (the skeleton PreCompact
    just wrote — found by recency, since SessionStart already consumed the `.compact` marker), fill its
-   body with the wrapped `compact_summary` + repo facts and flip `status: complete`, preserving its
+   body with the extracted summary + repo facts and flip `status: complete`, preserving its
    frontmatter (topic/title/created).
 2. If there is no pending snapshot — **reactive** prompt-too-long compaction skips PreCompact — create
    a completed handoff from scratch (resolve/provision the topic as in §8.3).
