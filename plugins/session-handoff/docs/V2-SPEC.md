@@ -98,7 +98,7 @@ $CLAUDE_PLUGIN_DATA/
 ├── cwd/
 │   ├── <cwd-hash>.ptr        # key=value: topic / last_sid / updated_at  (the durable pointer)
 │   └── <cwd-hash>.clears     # append-only TAB log; 1 line per /clear: ts \t cleared_sid \t cleared_topic \t claimed_by
-└── enforce.<sid>.count       # Stop-hook nudge counter (unchanged from v1)
+└── enforce.<sid>.count       # legacy Stop-hook counter (≤3.1.0); only reclaimed by the sweep now
 ```
 
 `<cwd-hash>` = first 16 hex of `sha1(cwd)` (stable per directory).
@@ -256,7 +256,7 @@ updated_at=1780864460407
 | `source` | sid | Action |
 |---|---|---|
 | `resume` | same | **No-op.** The CLI already restored the full transcript; re-injection is redundant. |
-| `compact` | same | Read `sessions/<sid>.compact` marker. **auto** → inject a *concise* nudge: "auto-compaction occurred mid-task; snapshot at `<path>` (next steps: …); continue your in-flight work." **manual** (or marker missing) → light touch: at most a one-line pointer to the snapshot; no continue-nudge. Consume the marker. |
+| `compact` | same | Read `sessions/<sid>.compact` marker, then consume it. **auto** → continue-nudge + pointer to the (still-`pending`) snapshot PostCompact fills moments later. **manual** → quiet one-line pointer; no continue-nudge (the user is present). **marker missing** → reactive compaction (PreCompact didn't run); soft *conditional* nudge ("if this was automatic, continue your in-flight work"), no pointer. |
 | `clear` | **new** | Claim from `<cwd-hash>.clears` per §7: 1 fresh → recap topic T (title · last task line · next step) + offer `/resume`; ≥2 → topic picker; 0 → topic-title list. Never silently adopt. |
 | `startup` | new | Inject a bounded list of recent **topic titles** + pointer to `/resume`. No auto-load. |
 
@@ -274,34 +274,51 @@ Output is always byte-capped to keep per-turn cost near zero. Opportunistically 
 
 ### 8.3 PreCompact
 
-1. Write the deterministic auto-snapshot (git+env facts + `<!-- TODO -->` placeholders) to the
-   session's topic dir. If the session has no topic yet, create a **provisional** topic
+1. Write the deterministic auto-snapshot (git+env facts, `status: pending`, `compact_trigger`) to the
+   session's topic dir. **No `<!-- TODO -->` placeholders** — the body is filled by PostCompact from
+   Claude Code's compaction summary. If the session has no topic yet, create a **provisional** topic
    `topic-<timestamp>`, record it in `sessions/<sid>.topic`, and write there.
 2. Stash `sessions/<sid>.compact` = `trigger=<auto|manual>` + `ts=<ms>` (SessionStart(compact) can't
    otherwise tell auto from manual — verified).
-3. Inject the enrichment nudge — emphasizing the **in-flight step** (half-applied edit, the next
-   command), not just a retrospective summary, so an auto-continue resumes mid-stride.
+3. Print a **summary-shaping instruction** on stdout. Claude Code appends PreCompact stdout to the
+   compaction summarizer's "Additional Instructions" *after* any user `/compact` text (it concatenates
+   — verified), so this is additive and phrased to defer to a deliberately narrow user request. It
+   asks the summary to preserve the in-flight step (verbatim), decisions+rationale, blockers, and
+   files touched — i.e. shape the summary PostCompact will harvest. (We cannot ask the model to edit
+   the file: the compaction summarizer has all tools denied — verified.)
 
 **Provisional-topic rule:** a provisional topic is *kept as-is* — the session's later first `/save`
 **joins the same provisional slug** (no directory rename, no frontmatter rewrite, no risk of orphaning
 the auto-snapshot). `topic_title` may still be set to something human in the `/save`. (Renaming a slug
 mid-stream is explicitly out of scope; the slug is cosmetic, the title carries readability.)
 
-> Note: during a long auto-continuing task the agent may not pause to enrich the snapshot. That's
-> acceptable — the deterministic snapshot carries facts, and the Stop hook enforces TODO-filling when
-> the turn finally ends.
+### 8.4 PostCompact
 
-### 8.4 Stop (unchanged from v1)
+Runs after Claude Code generates the compaction summary; receives `{trigger, compact_summary}`.
+`compact_summary` arrives as `<analysis>…chain-of-thought…</analysis><summary>…9-section
+handoff…</summary>` — Claude Code strips the "session continued" preamble but **not** the `<analysis>`
+block (verified live against v2.1.169). PostCompact extracts the `<summary>` body — dropping the
+`<analysis>` CoT and the XML tags (defensive: if the wrapper is ever absent it falls back to the
+de-analyzed text, then the raw text, so the summary is never lost) — and persists that as the durable
+handoff body so it survives `/clear` (Claude Code's in-context copy does not).
 
-If this session's own latest auto-snapshot still has `<!-- TODO -->` markers, nudge to fill it —
-session-scoped, capped at 2 attempts via `enforce.<sid>.count`.
+1. Locate this session's latest auto-snapshot. If it is `status: pending` (the skeleton PreCompact
+   just wrote — found by recency, since SessionStart already consumed the `.compact` marker), fill its
+   body with the extracted summary + repo facts and flip `status: complete`, preserving its
+   frontmatter (topic/title/created).
+2. If there is no pending snapshot — **reactive** prompt-too-long compaction skips PreCompact — create
+   a completed handoff from scratch (resolve/provision the topic as in §8.3).
+
+PostCompact's stdout is **display-only** (Claude Code shows it to the user; it is never injected into
+the model — verified), so it is used only for capture, never to nudge the model. A snapshot whose
+compaction aborts before PostCompact stays `status: pending` and is hidden from `list`/`resume`.
 
 ### 8.5 Age-based GC & crash recovery
 
 A single idempotent sweep, invoked opportunistically (throttled, e.g. once per process via a
 timestamp guard) from SessionStart and the command scripts:
 
-- Delete `sessions/<sid>.*`, `enforce.<sid>.count`, and `<cwd-hash>.clears` lines older than a TTL
+- Delete `sessions/<sid>.*`, `enforce.<sid>.count` (legacy ≤3.1.0), and `<cwd-hash>.clears` lines older than a TTL
   (default 14 days; configurable). This reclaims everything a crash/kill (no `SessionEnd`) leaves behind.
 - Validate referenced handoff paths before trusting a pointer/baton; treat dangling references as absent.
 - The sweep never touches committed handoffs — only ephemeral state.

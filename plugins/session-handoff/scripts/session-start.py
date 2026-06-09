@@ -44,15 +44,29 @@ def body():
         trig = lib.compact_trigger(sid)
         snap = lib.latest_auto_for_session(sid)
         lib.compact_clear(sid)
+        # The snapshot PreCompact just wrote is still pending here; the PostCompact
+        # hook fills its body moments later, before the model would open it.
+        pending = bool(snap) and lib.is_pending(snap)
+        if trig == "manual":
+            # User-initiated /compact: they are present and watching — a quiet
+            # pointer, no autonomous nudge.
+            if pending:
+                print("[session-handoff] Context compacted. Durable handoff saved at %s." % lib.rel(snap))
+            return
         if trig == "auto":
-            lines = ["[session-handoff] Auto-compaction occurred mid-task; the conversation was summarized."]
-            if snap:
-                lines.append("Pre-compaction snapshot: %s." % lib.rel(snap))
+            lines = ["[session-handoff] Context was compacted mid-task; the conversation was summarized."]
+            if pending:
+                lines.append("A durable handoff was saved at %s." % lib.rel(snap))
             lines.append("Continue your in-flight work from where you left off "
-                         "(see the snapshot's Next steps if you need them).")
+                         "(the handoff has the details if you need them).")
             emit("\n".join(lines))
-        elif snap:
-            print("[session-handoff] Context compacted. Snapshot if needed: %s." % lib.rel(snap))
+            return
+        # No stash: reactive (prompt-too-long) compaction skips PreCompact, so there
+        # is no fresh snapshot yet and no recorded trigger. Nudge softly and
+        # conditionally — this could (rarely) be a manual /compact whose PreCompact
+        # failed, and we don't want to wrongly drive autonomous continuation.
+        emit("[session-handoff] Context was compacted mid-task; the conversation was summarized. "
+             "If this was an automatic compaction, continue your in-flight work from where you left off.")
         return
 
     if src == "clear":
@@ -68,7 +82,7 @@ def body():
             csid = parts[1] if len(parts) > 1 else ""
             cts = parts[2] if len(parts) > 2 else ""
             lib.pending_clear_set(sid, ctopic, csid, cts)
-            latest = lib.latest_manual_in_topic(ctopic)
+            latest = lib.latest_ready_in_topic(ctopic)
             title = ctopic
             summ = ""
             if latest:

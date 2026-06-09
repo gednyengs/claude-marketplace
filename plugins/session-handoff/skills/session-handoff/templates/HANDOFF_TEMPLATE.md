@@ -33,6 +33,15 @@ The choices that matter and *why*, so they aren't relitigated next session.
 - Decision — rationale
 -->
 
+## Files & code touched
+
+<!--
+The specific files and functions central to this work, and WHY each matters — so the next session
+knows where to look without re-deriving it. Include short, load-bearing snippets where a one-line
+description won't do.
+- `path/to/file` — what changed / why it matters
+-->
+
 ## Approaches tried & dead ends
 
 <!--
@@ -52,7 +61,9 @@ Unresolved questions, things waiting on input, and known risks.
 ## Next steps
 
 <!--
-An ordered, actionable checklist. The first item should be unambiguous.
+An ordered, actionable checklist. The first item should be unambiguous. If you stopped mid-step,
+make item 1 the in-flight action and include a VERBATIM quote of where you left off (the exact edit,
+command, or user request underway) so the next session resumes without drift.
 1. …
 2. …
 -->

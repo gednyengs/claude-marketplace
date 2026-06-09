@@ -594,6 +594,13 @@ def fm_get(path, key):
     return ""
 
 
+def fm_quote(s):
+    """Quote a scalar for our dumb frontmatter reader (fm_get strips only the
+    surrounding double-quotes). Embedded double-quotes are downgraded to single
+    quotes so a generated title can never break the frontmatter block."""
+    return '"%s"' % (s or "").replace('"', "'")
+
+
 def handoff_id(path):
     """Canonical id: "<topic>/<ts>-<sid>" (sid-qualified)."""
     base = os.path.basename(path)
@@ -643,18 +650,42 @@ def latest_manual_in_topic(slug):
     return os.path.join(d, cands[-1]) if cands else ""
 
 
+def is_pending(path):
+    """True for an auto-snapshot still awaiting its compaction summary: PreCompact
+    wrote the skeleton but PostCompact hasn't filled it (or compaction aborted).
+    Pending files are hidden from discovery surfaces (list/resume/recent_topics)."""
+    return fm_get(path, "status") == "pending"
+
+
+def latest_ready_in_topic(slug):
+    """Latest non-pending handoff of ANY kind in a topic, or ''. Unlike
+    latest_manual_in_topic this also surfaces completed auto-snapshots, so a topic
+    that only ever auto-compacted is still resumable."""
+    d = topic_dir(slug)
+    if not os.path.isdir(d):
+        return ""
+    for fn in sorted((fn for fn in os.listdir(d) if fn.endswith(".md")), reverse=True):
+        p = os.path.join(d, fn)
+        if not is_pending(p):
+            return p
+    return ""
+
+
 def recent_topics(limit=5):
     """Up to `limit` most recent topics, newest first: (base, topic, path).
-    One row per topic, representative = its newest MANUAL handoff."""
+    One row per topic, representative = its newest ready handoff (any kind)."""
     d = handoff_dir()
     if not os.path.isdir(d):
         return []
     rows = []
     for dirpath, _dirs, filenames in os.walk(d):
         for fn in filenames:
-            if fn.endswith(".md") and is_manual(fn):
-                p = os.path.join(dirpath, fn)
-                rows.append((fn, fm_get(p, "topic"), p))
+            if not fn.endswith(".md"):
+                continue
+            p = os.path.join(dirpath, fn)
+            if is_pending(p):                    # skip un-filled auto skeletons
+                continue
+            rows.append((fn, fm_get(p, "topic"), p))
     rows.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
     seen = set()
     out = []
@@ -691,14 +722,14 @@ def resolve_id(q):
             return ""
         for cand in (os.path.join(d, topic, stem + ".md"),
                      os.path.join(d, topic, stem + "-auto.md")):
-            if os.path.isfile(cand) and _within_handoffs(cand):
+            if os.path.isfile(cand) and _within_handoffs(cand) and not is_pending(cand):
                 return cand
         matches = sorted(g for g in glob.glob(os.path.join(d, topic, stem + "*.md"))
-                         if _within_handoffs(g))
+                         if _within_handoffs(g) and not is_pending(g))
         return matches[0] if len(matches) == 1 else ""
     if not q or q in (".", "..") or os.sep in q:
         return ""
-    f = latest_manual_in_topic(q)
+    f = latest_ready_in_topic(q)
     return f if (f and _within_handoffs(f)) else ""
 
 
@@ -708,8 +739,30 @@ def handoff_when(base):
     return "%s %s:%s" % (m.group(1), m.group(2), m.group(3)) if m else ""
 
 
+def _primary_request_line(lines):
+    """Fallback summary source for auto-snapshots whose body is a Claude Code
+    compaction summary: it carries '1. Primary Request and Intent:' instead of a
+    '## Task & progress' section."""
+    for i, ln in enumerate(lines):
+        m = re.search(r"Primary Request and Intent[ \t]*:?[ \t]*(.*)", ln)
+        if not m:
+            continue
+        tail = re.sub(r"^\*+[ \t]*", "", m.group(1).strip())
+        if tail:
+            return tail
+        for nxt in lines[i + 1:]:                # header-only line: use the next real line
+            if re.match(r"^[ \t]*$", nxt) or re.match(r"^[ \t]*<!--", nxt):
+                continue
+            if re.match(r"^[ \t]*(#|[0-9]+\.[ \t])", nxt):   # next section/heading: no inline summary
+                return ""
+            return nxt
+        return ""
+    return ""
+
+
 def handoff_summary(path):
-    """One-line task summary from a handoff's "## Task & progress" section."""
+    """One-line task summary from a handoff's "## Task & progress" section, or
+    (for auto-snapshots) from the compaction summary's "Primary Request and Intent"."""
     if not os.path.isfile(path):
         return ""
     try:
@@ -734,6 +787,8 @@ def handoff_summary(path):
                 continue
             raw = ln
             break
+    if not raw:
+        raw = _primary_request_line(lines)
     s = re.sub(r"^[ \t]*([-*+]|[0-9]+\.)[ \t]+", "", raw)
     s = re.sub(r"^[ \t]*\[[ xX]\][ \t]*", "", s)
     s = s.replace("**", "")

@@ -77,6 +77,7 @@ Each handoff records:
 
 - **Task & progress**: the goal, and what's done, in progress, and not started.
 - **Key decisions & rationale**: so settled questions don't get reopened.
+- **Files & code touched**: the files and functions central to the work, and why each matters.
 - **Approaches tried & dead ends** (when relevant): attempts that failed or were abandoned, so the
   next session doesn't waste time repeating them.
 - **Open questions & blockers**: what's unresolved or waiting on input.
@@ -95,14 +96,15 @@ well for async work and team handoffs.
 
 The plugin protects your context without being asked:
 
-- **Before compaction**, it writes a snapshot of the session automatically. Even an unattended
-  session that hits auto-compaction leaves behind a usable handoff with real git and environment
-  facts.
+- **Before compaction**, it writes a safety snapshot with real git and environment facts, and steers
+  Claude Code's compaction summary toward what a handoff needs — the in-flight step, decisions and
+  their rationale, blockers, and the files touched.
+- **After compaction**, it persists Claude Code's own summary into that snapshot as the durable
+  handoff body, so even an unattended auto-compaction leaves behind a complete handoff that survives
+  `/clear`. On automatic compaction it also nudges the session to continue its in-flight work.
 - **After `/clear`**, the next session recognizes the topic you just cleared and offers to resume
   it.
 - **On session start**, you get a short list of recent topics so you can pick one back up.
-- **If an automatic snapshot was left unfinished**, it nudges Claude to complete it, then gets out
-  of the way. There are no nagging loops.
 
 ## What you can rely on
 
