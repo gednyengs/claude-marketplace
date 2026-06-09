@@ -58,14 +58,14 @@ def main():
     if not lib.session_is_degraded(sid):
         mytopic = lib.session_topic_get(sid)
         if mytopic:
-            f = lib.latest_manual_in_topic(mytopic)
+            f = lib.latest_ready_in_topic(mytopic)
             if f and os.path.isfile(f):
                 emit_loaded(f, "this session's topic", sid)
                 return
         # ---- 3. A claimed clear-baton (the post-/clear happy path) ----
         pend = lib.pending_clear_topic(sid)
         if pend:
-            f = lib.latest_manual_in_topic(pend)
+            f = lib.latest_ready_in_topic(pend)
             if f and os.path.isfile(f):
                 emit_loaded(f, "resumed after /clear", sid)
                 return

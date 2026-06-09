@@ -24,8 +24,10 @@ by hand.
 
 Handoffs are markdown files under `.claude/sekekama/session-handoff/handoffs/<topic-slug>/`,
 named `YYYY-MM-DD-HHMMSS-<sessionid>.md` so they sort chronologically and never collide
-between concurrent sessions. Pre-compaction safety snapshots use a `-auto.md` suffix. Each
-file opens with YAML **frontmatter that is the source of truth** (`topic`, `topic_title`,
+between concurrent sessions. Compaction snapshots use a `-auto.md` suffix and are filled from
+Claude Code's own compaction summary by the PostCompact hook; they carry two extra frontmatter
+fields, `status` (`pending` until filled, then `complete`) and `compact_trigger` (`auto`/`manual`).
+Each file opens with YAML **frontmatter that is the source of truth** (`topic`, `topic_title`,
 `session_id`, `created`, `kind`, optional `depends_on`) — the topic subdirectory is just
 human-facing organization. Manual handoffs are portable and meant to be committed; auto-snapshots
 belong to the session that created them.
@@ -45,7 +47,7 @@ for when the user asks in natural language. The behavior is the same.
    to reflect in the handoff body; it does not name the topic.
 3. Write the file to that exact `PATH`, starting with the verbatim frontmatter block (you may
    refine `topic_title`), then the body sections from `templates/HANDOFF_TEMPLATE.md`:
-   Task & progress · Key decisions & rationale · Open questions & blockers · Next steps ·
+   Task & progress · Key decisions & rationale · Files & code touched · Open questions & blockers · Next steps ·
    Environment, commands & results · Repo snapshot · Resume instructions, plus an optional
    "Approaches tried & dead ends" section when you hit attempts worth warning the next session not to
    repeat. Be concise but specific (paths, names, exact commands). **Never write secrets, tokens, or credentials.** If an
@@ -89,17 +91,22 @@ in that topic".
 ## Automatic safety net (hooks)
 
 The plugin protects context without being asked:
-- **PreCompact** writes a deterministic safety snapshot (with `<!-- TODO -->` placeholders) to the
-  session's topic before the context window is compacted, and asks you to enrich it — emphasizing
-  the **in-flight step** — while you still have full context.
+- **PreCompact** writes a deterministic safety snapshot (git + environment facts, `status: pending`)
+  to the session's topic before the context window is compacted, and steers Claude Code's compaction
+  summary toward handoff essentials (the in-flight step quoted verbatim, decisions and rationale,
+  blockers, files touched). It runs for both auto and manual `/compact`; its instruction is appended
+  *after* any `/compact` text you typed — additive, never replacing it.
+- **PostCompact** receives Claude Code's generated compaction summary and persists it into that
+  snapshot as the durable handoff body (flipping `status` to `complete`), so the summary survives
+  `/clear`. If compaction skipped PreCompact (reactive prompt-too-long), it creates a completed
+  handoff from scratch.
 - **SessionStart** is source-aware: `resume` → no-op (the transcript is already restored);
-  `compact` → a concise continue-nudge (auto) or light pointer (manual) to the snapshot; `clear` →
+  `compact` → a continue-nudge (auto) or a quiet pointer (manual) to the snapshot; `clear` →
   recaps the topic you just cleared (claimed from a per-directory clear-log) and offers to resume,
   or shows a picker if multiple clears are ambiguous; `startup` → a short list of recent topics.
   It never silently adopts a topic or injects another session's content.
 - **SessionEnd(clear)** leaves a small "baton" carrying the cleared session's own topic, so the
   next (new) session can pick it back up. No eager deletion — state is reclaimed by an age sweep.
-- **Stop** nudges you (at most twice) to finish filling an auto-snapshot's placeholders.
 
-When you see a PreCompact or Stop directive about an unfilled auto-snapshot, open the named
-`*-auto.md` file and replace every `<!-- TODO -->` with real content from the conversation.
+A snapshot whose compaction aborted before PostCompact stays `status: pending` and is hidden from
+`list`/`resume`; the age sweep reclaims it.

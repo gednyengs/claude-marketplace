@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
-# PreCompact hook. Before the context is compacted, write a topic-tagged
-# auto-snapshot (with TODO placeholders), record the compaction trigger, and ask
-# the model to fill the snapshot in — emphasizing the in-flight step.
+# PreCompact hook. Before the context is compacted, write a *pending* safety
+# snapshot (frontmatter + repo snapshot + detected commands) for this session's
+# topic, stash the compaction trigger so SessionStart can tell auto from manual,
+# and steer Claude Code's own compaction summary toward handoff-relevant content.
+#
+# The snapshot's BODY is filled in moments later by the PostCompact hook, which
+# receives Claude Code's generated compaction summary and persists it here
+# (flipping status: pending -> complete). The no-tools summarizer cannot edit
+# files during compaction, so we never ask the model to fill the file by hand.
 import os
 import sys
 
@@ -23,9 +29,9 @@ def body():
         slug = lib.unique_topic_slug("topic-" + lib.timestamp())
         lib.session_topic_set(sid, slug)
 
-    # Best-effort human title (carried from an earlier manual handoff).
+    # Best-effort human title (carried from an earlier handoff in this topic).
     title = slug
-    latest = lib.latest_manual_in_topic(slug)
+    latest = lib.latest_ready_in_topic(slug)
     if latest:
         t = lib.fm_get(latest, "topic_title")
         if t:
@@ -36,46 +42,37 @@ def body():
         "---",
         "schema: 2",
         "topic: " + slug,
-        'topic_title: "%s"' % title,
+        "topic_title: " + lib.fm_quote(title),
         "session_id: " + sid,
         "created: " + lib.created_stamp(),
         "kind: auto",
+        "status: pending",
         "compact_trigger: " + trigger,
         "---",
         "",
         "# Handoff — " + lib.iso(),
         "",
-        "> AUTO-SNAPSHOT written before context compaction (trigger: %s)." % trigger,
-        "> Replace each <!-- TODO --> with concrete detail from the live conversation.",
-        "",
-        "## Task & progress",
-        "<!-- TODO: current goal; what's done; what's in progress; what's not started -->",
-        "",
-        "## Key decisions & rationale",
-        "<!-- TODO: important choices and *why*, so they aren't relitigated -->",
-        "",
-        "## Open questions & blockers",
-        "<!-- TODO: unresolved questions, things waiting on input, known risks -->",
-        "",
-        "## Next steps",
-        "<!-- TODO: ordered & actionable; put the IN-FLIGHT step (the edit/command you were "
-        "mid-way through) FIRST -->",
+        "> Auto-snapshot taken before context compaction (trigger: %s)." % trigger,
+        "> Claude Code's compaction summary is persisted into this file once compaction",
+        "> completes; until then this is a repo-state safety record.",
         "",
         lib.facts(),
-        "",
-        "## Resume instructions",
-        "<!-- TODO: the first concrete actions the next turn should take to continue -->",
     ])
     lib.atomic_write(f, content + "\n")
 
     # Stash the trigger so SessionStart(source=compact) can tell auto from manual.
     lib.compact_set(sid, trigger, lib.now_ms())
 
-    print("[session-handoff] A safety snapshot was saved to %s before compaction." % lib.rel(f))
-    print('Before this context is compacted, replace every "<!-- TODO -->" in that file with concrete')
-    print("detail from this conversation — especially the IN-FLIGHT step (the edit or command you were")
-    print("mid-way through) as the FIRST item under Next steps, so work resumes mid-stride. Keep it")
-    print("concise but sufficient for a session with no memory of this one. Do not include secrets.")
+    # Steer Claude Code's compaction summary. Our stdout is appended to the
+    # summarizer's instructions AFTER any /compact text the user supplied
+    # (Claude Code concatenates them) — additive, never exclusive — so we phrase
+    # it to defer to a deliberately narrow user request.
+    print("When you write the compaction summary, in addition to anything the user asked you to "
+          "focus on above, ensure it preserves — where present — these handoff essentials so work "
+          "can resume cleanly in a fresh session: the exact in-flight step quoted verbatim (the "
+          "edit or command underway); key decisions and the rationale behind them; open questions "
+          "and blockers; and the files/functions touched and why. Do not broaden the scope of an "
+          "explicitly narrow user request; within that scope, capture these where they apply.")
 
 
 lib.run_hook(body)

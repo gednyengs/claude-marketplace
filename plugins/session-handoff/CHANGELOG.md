@@ -3,6 +3,42 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [3.2.0] — 2026-06-08
+
+Compaction handoffs now piggyback on Claude Code's own compaction summary instead of leaving an
+unfilled skeleton for the model to complete. A new **PostCompact** hook persists that summary as the
+durable handoff body, and the **Stop** hook (which nagged the model to fill `<!-- TODO -->`
+placeholders) is removed. No change to the `/save`, `/resume`, `/load`, `/list` interface; the
+on-disk layout is unchanged and old handoffs remain readable.
+
+### Added
+- **PostCompact hook.** Receives Claude Code's generated compaction summary and writes it into the
+  pre-compaction snapshot as the handoff body, flipping the snapshot's `status` from `pending` to
+  `complete`. That summary is what Claude Code injects in-context after compaction; persisting it
+  makes the content survive `/clear`, restarts, and new sessions. If compaction skipped PreCompact
+  (reactive prompt-too-long compaction), PostCompact creates a completed handoff from scratch.
+- **`Files & code touched` section** in the manual handoff template, plus a verbatim in-flight quote
+  requirement in `Next steps`, to reduce drift when resuming mid-edit.
+- **Auto-snapshot frontmatter** now carries `status` (`pending`/`complete`) and `compact_trigger`
+  (`auto`/`manual`). Pending snapshots (compaction aborted before PostCompact) are hidden from
+  `list`/`resume` and reclaimed by the age sweep.
+
+### Changed
+- **PreCompact** no longer writes `<!-- TODO -->` placeholders or asks the model to fill the file by
+  hand (the compaction summarizer has no tools and cannot). It writes a `pending` safety snapshot
+  with git + environment facts and steers Claude Code's compaction summary toward handoff essentials
+  — appended *after* any `/compact` text you typed, additive and never replacing it.
+- **Auto-snapshots are now first-class for resume.** `resume`, `list --any`, and the recent-topics
+  surfaces consider completed auto-snapshots of any kind, so a session that only ever auto-compacted
+  is resumable. Manual `/compact` also produces a durable handoff.
+- **SessionStart(compact)** distinguishes auto (continue-nudge) from manual (quiet pointer), with a
+  soft conditional fallback for reactive compaction (which records no trigger).
+
+### Removed
+- **Stop hook (`enforce.py`).** It nagged the model (up to twice) to fill auto-snapshot
+  placeholders, which forced extra model turns. PostCompact now fills the body automatically for
+  free, so the gate is obsolete; removing it eliminates those turns.
+
 ## [3.1.0] — 2026-06-08
 
 Additive capture improvements: an optional dead-ends section and a richer environment section. No

@@ -30,12 +30,12 @@
         ]
       }
     ],
-    "Stop": [
+    "PostCompact": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/enforce.py\" --project-dir \"${CLAUDE_PROJECT_DIR}\" --plugin-data \"${CLAUDE_PLUGIN_DATA}\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/postcompact.py\" --project-dir \"${CLAUDE_PROJECT_DIR}\" --plugin-data \"${CLAUDE_PLUGIN_DATA}\""
           }
         ]
       }

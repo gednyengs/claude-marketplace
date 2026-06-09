@@ -50,7 +50,7 @@ def main():
     # Title: carry an existing topic's title; otherwise the model refines the
     # timestamp slug into a concise human title when it writes the file.
     title = slug
-    latest = lib.latest_manual_in_topic(slug)
+    latest = lib.latest_ready_in_topic(slug)
     if latest:
         t = lib.fm_get(latest, "topic_title")
         if t:
@@ -75,7 +75,7 @@ def main():
     out.append("---")
     out.append("schema: 2")
     out.append("topic: " + slug)
-    out.append('topic_title: "%s"' % title)
+    out.append("topic_title: " + lib.fm_quote(title))
     out.append("session_id: " + sid)
     out.append("created: " + created)
     out.append("kind: manual")

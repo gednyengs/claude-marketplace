@@ -62,7 +62,8 @@ def main():
 
     # --- Current-topic view ---
     d = lib.topic_dir(cur)
-    files = sorted(glob.glob(os.path.join(d, "*.md")), reverse=True)[:max_n] if os.path.isdir(d) else []
+    files = ([f for f in sorted(glob.glob(os.path.join(d, "*.md")), reverse=True)
+              if not lib.is_pending(f)][:max_n] if os.path.isdir(d) else [])
     if not files:
         print("_No handoffs yet in the current topic '%s'. Run /session-handoff:list --any to see other topics._" % cur)
         return
