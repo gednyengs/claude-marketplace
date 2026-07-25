@@ -40,5 +40,5 @@ def main():
         print("Migration did not complete (some copies failed). Re-run to retry; originals are untouched.")
         sys.exit(1)
 
-
-main()
+if __name__ == "__main__":          # importable for tests; commands run it as a script
+    main()

@@ -3,6 +3,103 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [3.3.0] — 2026-07-24
+
+A correctness and containment release, prompted by a full audit of the plugin (self-review plus an
+independent external review). No change to the `/save`, `/resume`, `/load`, `/list` interface and no
+on-disk format change; existing handoffs and topics keep working untouched.
+
+### Fixed — containment
+- **A handoff's `topic` frontmatter can no longer redirect where the plugin writes.** The field was
+  treated as authoritative session state, and `os.path.join` lets an absolute value swallow the base
+  path — so a committed handoff carrying `topic: /tmp/x` would make a later PreCompact write its
+  snapshot *outside the repository*. Topics are now validated as a single plain path component
+  (`lib.valid_slug`/`safe_slug`) at every point one enters — frontmatter, `--topic`, the `/clear`
+  baton, the session binding — and `topic_dir()` refuses a malformed slug outright. The grammars are
+  applied with `fullmatch()`: Python's `$` also matches just before a terminal newline, so an
+  anchored `^…$` would have accepted `"safe\n"` — a value that then reaches a path, or lands in
+  frontmatter as two lines.
+- **Discovery no longer follows symlinks out of the handoff tree.** `latest_ready_in_topic()`,
+  `recent_topics()` and `all_handoffs_bytime()` performed no containment check, so a symlink
+  committed into a topic directory could make `resume` read and echo an arbitrary file into model
+  context. All three now apply the same `realpath` containment test `resolve_id()` already used, and
+  `resume`/`load` re-check at the moment of opening (resolution and open are separate operations).
+- **`resolve_id()` no longer passes glob metacharacters to `glob.glob` unescaped**; both halves of an
+  id are matched against an explicit grammar first, and escaped as a backstop.
+- **Handoff content is fenced as data.** `resume` and `load` wrap the body in BEGIN/END markers and
+  state that it is file content rather than instructions. The markers are **derived per file**
+  (`lib.fence`) and guaranteed absent from the body — a fixed marker would be forgeable by a handoff
+  that simply contains the end marker, making everything after it look like it fell outside the
+  boundary. Titles and summaries injected by the hooks are flattened to one bounded line
+  (`lib.sanitize_line`), and `fm_quote()` flattens newlines so a title carried forward from an
+  earlier handoff cannot inject frontmatter keys into a new one.
+
+### Fixed — lifecycle
+- **Two sessions can no longer merge into one topic.** `unique_topic_slug()` used a check-then-create
+  test, so two topicless sessions starting in the same second both settled on `topic-<ts>`. The slug
+  is now reserved atomically with `os.mkdir`, and the function never returns a name it has not
+  attempted to claim (the old bounded loop fell out and returned `<base>-999` unreserved).
+- **The GC sweep no longer deletes the live session's own state.** Session files were reclaimed on
+  age alone, so a session resumed from a transcript older than the TTL could have its topic binding
+  deleted by its own sweep. Callers now pass `keep_sid`.
+- **Degraded sessions no longer share topic state or snapshots.** When no session id is available,
+  PreCompact and PostCompact previously read and wrote the shared `nosession` binding, letting one
+  unidentified session adopt another's topic. They now neither read nor write it, and take a fresh
+  topic instead. Skeleton adoption is also disabled there: since every degraded run resolves to the
+  same key, matching a summary to a snapshot by recency could complete a *different* session's file.
+  A degraded PreCompact publishes its snapshot `complete` immediately, and a degraded PostCompact
+  always writes its own separate handoff.
+- **PostCompact always finishes what PreCompact announced.** If no usable compaction summary
+  arrived, it returned early and left a `status: pending` file that `list`/`resume` hide — after
+  SessionStart had already told the user a handoff was saved. It now completes the snapshot with an
+  explicit "summary unavailable" body over the repo facts, and says so on stdout.
+- **A failed state write is reported instead of swallowed.** `save-record.py` printed "Recorded"
+  even when the session→topic binding could not be written (unwritable state directory); it now
+  fails with an actionable message. `save-record.py` also verifies the handoff path is inside the
+  handoff directory before recording.
+- **Legacy migration backfills schema-2 frontmatter.** A v1 handoff that already began with `---` was
+  copied verbatim, landing with no `topic:` — migrated but invisible to discovery. Missing keys are
+  now spliced in without disturbing existing ones.
+
+### Fixed — documentation
+- `commands/save.md` was missing the **`Files & code touched`** section that `SKILL.md` and the
+  template require and that the 3.2.0 notes claimed was added, so `/session-handoff:save` and the
+  natural-language skill produced structurally different handoffs. It also now carries the verbatim
+  in-flight quote requirement in `Next steps`.
+- The 3.2.0 claim that pending snapshots are "reclaimed by the age sweep" **was never true** — the
+  sweep only ever touches ephemeral state, by design (`V2-SPEC.md`). The docs now say what actually
+  happens: an abandoned pending snapshot is inert and hidden, and is removed by hand. No code was
+  added to delete committed handoffs.
+- README documents that slash-command arguments reach the shell as typed, so a note containing shell
+  metacharacters (notably an apostrophe) breaks the command — quote the note.
+- README warns that `-auto.md` snapshots embed Claude Code's summary of the whole conversation
+  verbatim, with none of the "no secrets" discipline the manual path applies, and should be reviewed
+  before being committed.
+
+### Added
+- **A one-time notice when handoffs land somewhere git ignores.** `V2-SPEC.md` §3.3 specified this
+  ("on first write it emits a one-time notice") but it was never implemented, so a project with a
+  wholesale `.claude/` ignore silently got local-only handoffs while the docs described a shareable
+  artifact. The commit posture is unchanged and still neutral — the plugin never edits `.gitignore`.
+- **A test suite** (`tests/test_session_handoff.py`, 90 tests, standard library only): compaction
+  summary parsing, the slug grammar and path containment, symlink escape, the `/clear` baton, the GC
+  sweep, frontmatter parsing, legacy migration, the PreCompact/PostCompact hooks driven as processes
+  with real payloads, and an end-to-end run of the command scripts. Every defect above has a named
+  regression test.
+- Hook and command scripts are now importable (`if __name__ == "__main__":`) so they can be tested.
+
+### Changed
+- Frontmatter is parsed in **one pass** (`lib.fm_all`), halving the file reads `recent_topics()` did
+  per handoff on the session-start path. Arbitrary key text is preserved, matching what the old
+  per-key scanner accepted — restricting keys to identifiers would have silently dropped hyphenated
+  or digit-leading keys in handoffs already on disk.
+
+### Removed
+- **The per-directory `<cwd-hash>.ptr` pointer.** Nothing ever read it back, so every save and resume
+  paid a lock and three rewrites to maintain state no resolution path consulted. Leftover `.ptr`
+  files are reclaimed by the sweep. `ptr_topic()`, `latest_for_session()` and
+  `latest_manual_in_topic()` are gone with it.
+
 ## [3.2.0] — 2026-06-08
 
 Compaction handoffs now piggyback on Claude Code's own compaction summary instead of leaving an
@@ -25,6 +122,10 @@ on-disk layout is unchanged and old handoffs remain readable.
 - **Auto-snapshot frontmatter** now carries `status` (`pending`/`complete`) and `compact_trigger`
   (`auto`/`manual`). Pending snapshots (compaction aborted before PostCompact) are hidden from
   `list`/`resume` and reclaimed by the age sweep.
+  > **Correction (3.3.0):** the reclamation half of that sentence was never true — the sweep only
+  > ever touches ephemeral state, never a committed handoff. An abandoned pending snapshot is inert
+  > and stays on disk until deleted by hand. 3.3.0 also makes abandonment far rarer by always
+  > completing a snapshot PostCompact was told about.
 
 ### Changed
 - **PreCompact** no longer writes `<!-- TODO -->` placeholders or asks the model to fill the file by

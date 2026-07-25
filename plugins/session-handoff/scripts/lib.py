@@ -144,7 +144,35 @@ def handoff_dir():
     return os.path.join(root(), "handoffs")
 
 
+# A topic slug is the only untrusted value interpolated into a handoff path, and
+# it can arrive from places we do not control: a committed handoff's frontmatter,
+# a --topic argument, a baton written by an earlier session. Restrict it to a
+# single safe path component. The grammar forbids a leading dot and any path
+# separator, so a slug can never traverse ("../x"), absolutize ("/tmp/x", which
+# os.path.join would silently let swallow the base), or name "." / "..".
+# fullmatch, NOT match: Python's `$` also matches just before a trailing newline,
+# so `^...$` would accept "safe\n" — a value that then reaches a path or a
+# frontmatter line as two lines. The grammar must mean exactly what it says.
+_SLUG_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def valid_slug(slug):
+    return bool(_SLUG_RE.fullmatch(slug or ""))
+
+
+def safe_slug(slug, fallback=""):
+    """Return `slug` if it is a well-formed topic slug, else `fallback` (itself
+    validated), else "". Use wherever an untrusted topic enters the plugin."""
+    if valid_slug(slug):
+        return slug
+    return fallback if valid_slug(fallback) else ""
+
+
 def topic_dir(slug):
+    """Path of a topic directory. Raises on a malformed slug — callers that may
+    hold untrusted input must launder it through safe_slug() first."""
+    if not valid_slug(slug):
+        raise ValueError("invalid topic slug: %r" % (slug,))
     return os.path.join(handoff_dir(), slug)
 
 
@@ -337,7 +365,7 @@ def kv_get(path, key):
 
 
 def kv_set(path, key, value):
-    """Read-modify-write preserving other keys."""
+    """Read-modify-write preserving other keys. Returns True on success."""
     lines = []
     if os.path.isfile(path):
         try:
@@ -347,7 +375,7 @@ def kv_set(path, key, value):
         except OSError:
             lines = []
     lines.append("%s=%s" % (key, value))
-    atomic_write(path, "\n".join(lines) + "\n")
+    return atomic_write(path, "\n".join(lines) + "\n")
 
 
 # --- Session->topic map and per-session state -------------------------------
@@ -365,8 +393,10 @@ def session_topic_get(sid):
 
 
 def session_topic_set(sid, topic):
+    """Bind a session to a topic. Returns True on success — callers on a command
+    path must report a failure rather than claim the save was recorded."""
     ensure_state()
-    atomic_write(session_topic_file(sid), topic)
+    return atomic_write(session_topic_file(sid), topic)
 
 
 def deps_file(sid):
@@ -446,10 +476,6 @@ def cwd_hash():
     return hashlib.sha1(p.encode("utf-8", "surrogateescape")).hexdigest()[:16]
 
 
-def ptr_file():
-    return os.path.join(cwd_dir(), cwd_hash() + ".ptr")
-
-
 def clears_file():
     return os.path.join(cwd_dir(), cwd_hash() + ".clears")
 
@@ -458,20 +484,10 @@ def cwd_lock():
     return os.path.join(cwd_dir(), cwd_hash() + ".lock")
 
 
-def ptr_topic():
-    return kv_get(ptr_file(), "topic")
-
-
-def _ptr_set(topic, sid):
-    ensure_state()
-    f = ptr_file()
-    kv_set(f, "topic", topic)
-    kv_set(f, "last_sid", sid)
-    kv_set(f, "updated_at", str(now_ms()))
-
-
-def ptr_set(topic, sid):
-    with_lock(cwd_lock(), _ptr_set, topic, sid)
+# The per-directory "<cwd-hash>.ptr" pointer that v2 wrote here is gone as of
+# 3.3.0: nothing ever read it back, so every save/resume paid a lock and three
+# rewrites for state no resolution path consulted. Topic resolution is keyed on
+# the session and the clear-baton. Leftover .ptr files are reclaimed by the sweep.
 
 
 def _clears_append(csid, ctopic):
@@ -552,6 +568,10 @@ def clears_claim(nsid, fresh=120):
 
 _AUTO_RE = re.compile(r"^" + TS_RE + r"-[A-Za-z0-9]+-auto\.md$")
 _MANUAL_RE = re.compile(r"^" + TS_RE + r"(-[A-Za-z0-9]+)?\.md$")
+# The "<ts>-<sid>" half of an id. Like a slug, this is a single path component
+# with no separator, no leading dot, and no glob metacharacter. Matched with
+# fullmatch() for the same trailing-newline reason as _SLUG_RE.
+_STEM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 def is_auto(name):
@@ -568,37 +588,91 @@ def new_handoff_path(mode, sid, slug):
     return os.path.join(topic_dir(slug), "%s-%s%s.md" % (timestamp(), sid, suffix))
 
 
-def fm_get(path, key):
-    """Read a scalar frontmatter field (strips surrounding double quotes).
-    Deliberately dumb: scans only the first --- block, no YAML semantics."""
-    if not os.path.isfile(path):
-        return ""
+# Any key at column 0 up to the first colon, matching what the old per-key
+# scanner accepted (it built `^<literal-key>:` for whatever key it was asked
+# for). Narrowing this to identifiers would silently drop hyphenated or
+# digit-leading keys that existing handoffs may carry. Leading whitespace is
+# excluded so YAML list items ("  - x") are not mistaken for keys.
+_FM_LINE = re.compile(r"^([^\s:][^:]*):[ \t]*(.*)$")
+
+
+def fm_all(path):
+    """Parse the leading frontmatter block into a dict in ONE pass, reading only
+    as far as the closing fence. Deliberately dumb: scalar `key: value` lines,
+    surrounding double quotes stripped, no YAML semantics. First occurrence of a
+    key wins (matching the old single-key scan). Callers that need several fields
+    should use this instead of repeated fm_get() calls, which reopen the file."""
+    out = {}
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
-            lines = f.read().split("\n")
+            if f.readline().rstrip("\n") != "---":
+                return out
+            for ln in f:
+                ln = ln.rstrip("\n")
+                if ln == "---":
+                    break
+                m = _FM_LINE.match(ln)
+                if not m:
+                    continue                    # list items, blanks, junk
+                key, val = m.group(1), m.group(2)
+                if val.startswith('"'):
+                    val = val[1:]
+                if val.endswith('"'):
+                    val = val[:-1]
+                out.setdefault(key, val)
     except OSError:
-        return ""
-    if not lines or lines[0] != "---":
-        return ""
-    prefix = re.compile(r"^" + re.escape(key) + r":[ \t]*")
-    for ln in lines[1:]:
-        if ln == "---":
-            break
-        if prefix.match(ln):
-            val = prefix.sub("", ln, count=1)
-            if val.startswith('"'):
-                val = val[1:]
-            if val.endswith('"'):
-                val = val[:-1]
-            return val
-    return ""
+        return {}
+    return out
+
+
+def fm_get(path, key):
+    """Read one scalar frontmatter field (strips surrounding double quotes)."""
+    return fm_all(path).get(key, "")
+
+
+def fm_topic(path, fm=None):
+    """The VALIDATED topic of a handoff. Frontmatter is the source of truth, but
+    it is also untrusted input from a committed file, so a malformed value falls
+    back to the containing directory name and then to "". Never hand a raw
+    fm_get(path, "topic") to anything that builds a path or persists state."""
+    fm = fm_all(path) if fm is None else fm
+    return safe_slug(fm.get("topic", ""), os.path.basename(os.path.dirname(path)))
 
 
 def fm_quote(s):
     """Quote a scalar for our dumb frontmatter reader (fm_get strips only the
     surrounding double-quotes). Embedded double-quotes are downgraded to single
-    quotes so a generated title can never break the frontmatter block."""
-    return '"%s"' % (s or "").replace('"', "'")
+    quotes so a generated title can never break the frontmatter block, and the
+    value is flattened to one line so a title carried forward from an earlier
+    handoff cannot smuggle extra frontmatter keys into the new one."""
+    return '"%s"' % sanitize_line(s).replace('"', "'")
+
+
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def sanitize_line(s, limit=160):
+    """Flatten a single line of untrusted text (a title or task summary read out
+    of a committed handoff) before it is injected into model context: collapse it
+    to one line, drop control characters, and bound the length. Stops a crafted
+    handoff from smuggling extra lines or terminal escapes into a hook's output."""
+    s = _CTRL_RE.sub("", (s or "").replace("\r", " ").replace("\n", " "))
+    return re.sub(r"[ \t]+", " ", s).strip()[:limit]
+
+
+def fence(content, label="HANDOFF"):
+    """Return (begin, end) delimiters guaranteed to be ABSENT from `content`.
+
+    A fixed marker is forgeable: a committed handoff that itself contains the end
+    marker would make everything after it appear to fall outside the data
+    boundary — precisely the confusion the boundary exists to prevent. Suffixing
+    the label until neither marker occurs in the body makes the fence unspoofable.
+    Terminates because a finite string contains finitely many substrings."""
+    tag, n = label, 1
+    while ("BEGIN " + tag) in content or ("END " + tag) in content:
+        n += 1
+        tag = "%s-%d" % (label, n)
+    return "----- BEGIN %s -----" % tag, "----- END %s -----" % tag
 
 
 def handoff_id(path):
@@ -607,30 +681,27 @@ def handoff_id(path):
     stem = base[:-3] if base.endswith(".md") else base
     if stem.endswith("-auto"):
         stem = stem[:-5]
-    topic = fm_get(path, "topic") or os.path.basename(os.path.dirname(path))
-    return "%s/%s" % (topic, stem)
+    return "%s/%s" % (fm_topic(path), stem)
 
 
 def all_handoffs_bytime():
-    """All handoff files, oldest->newest by timestamp prefix (across topics)."""
+    """All handoff files, oldest->newest by timestamp prefix (across topics).
+    Symlinks whose target leaves the handoff tree are dropped — os.walk does not
+    follow linked *directories*, but it does yield linked files."""
     d = handoff_dir()
     if not os.path.isdir(d):
         return []
     files = []
     for dirpath, _dirs, filenames in os.walk(d):
         for fn in filenames:
-            if fn.endswith(".md"):
-                files.append((fn, os.path.join(dirpath, fn)))
+            if not fn.endswith(".md"):
+                continue
+            p = os.path.join(dirpath, fn)
+            if not _within_handoffs(p):
+                continue
+            files.append((fn, p))
     files.sort(key=lambda t: (t[0], t[1]))
     return [p for _b, p in files]
-
-
-def latest_for_session(sid):
-    result = ""
-    for f in all_handoffs_bytime():
-        if fm_get(f, "session_id") == sid:
-            result = f
-    return result
 
 
 def latest_auto_for_session(sid):
@@ -641,15 +712,6 @@ def latest_auto_for_session(sid):
     return result
 
 
-def latest_manual_in_topic(slug):
-    d = topic_dir(slug)
-    if not os.path.isdir(d):
-        return ""
-    cands = sorted(fn for fn in os.listdir(d)
-                   if fn.endswith(".md") and is_manual(fn))
-    return os.path.join(d, cands[-1]) if cands else ""
-
-
 def is_pending(path):
     """True for an auto-snapshot still awaiting its compaction summary: PreCompact
     wrote the skeleton but PostCompact hasn't filled it (or compaction aborted).
@@ -658,14 +720,19 @@ def is_pending(path):
 
 
 def latest_ready_in_topic(slug):
-    """Latest non-pending handoff of ANY kind in a topic, or ''. Unlike
-    latest_manual_in_topic this also surfaces completed auto-snapshots, so a topic
-    that only ever auto-compacted is still resumable."""
+    """Latest non-pending handoff of ANY kind in a topic, or ''. Completed
+    auto-snapshots count, so a topic that only ever auto-compacted is resumable.
+    `slug` may be untrusted, and a candidate may be a symlink pointing out of the
+    tree, so both are checked before the path is returned to a caller that reads it."""
+    if not valid_slug(slug):
+        return ""
     d = topic_dir(slug)
     if not os.path.isdir(d):
         return ""
     for fn in sorted((fn for fn in os.listdir(d) if fn.endswith(".md")), reverse=True):
         p = os.path.join(d, fn)
+        if not _within_handoffs(p):
+            continue
         if not is_pending(p):
             return p
     return ""
@@ -673,7 +740,8 @@ def latest_ready_in_topic(slug):
 
 def recent_topics(limit=5):
     """Up to `limit` most recent topics, newest first: (base, topic, path).
-    One row per topic, representative = its newest ready handoff (any kind)."""
+    One row per topic, representative = its newest ready handoff (any kind).
+    Reads each file's frontmatter ONCE (status + topic come from the same parse)."""
     d = handoff_dir()
     if not os.path.isdir(d):
         return []
@@ -683,9 +751,15 @@ def recent_topics(limit=5):
             if not fn.endswith(".md"):
                 continue
             p = os.path.join(dirpath, fn)
-            if is_pending(p):                    # skip un-filled auto skeletons
+            if not _within_handoffs(p):          # symlink out of the tree
                 continue
-            rows.append((fn, fm_get(p, "topic"), p))
+            fm = fm_all(p)
+            if fm.get("status") == "pending":    # skip un-filled auto skeletons
+                continue
+            topic = fm_topic(p, fm)
+            if not topic:                        # unusable/malformed topic
+                continue
+            rows.append((fn, topic, p))
     rows.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
     seen = set()
     out = []
@@ -717,17 +791,21 @@ def resolve_id(q):
     d = handoff_dir()
     if "/" in q:
         topic, stem = q.split("/", 1)
-        if (not topic or not stem or topic in (".", "..")
-                or "/" in stem or os.sep in topic or os.sep in stem):
+        # Both halves must be single, well-formed path components. The grammars
+        # exclude "/" , a leading dot, and every glob metacharacter, so the
+        # prefix search below cannot be steered outside the topic directory;
+        # glob.escape() keeps that true even if the grammar is ever widened.
+        if not valid_slug(topic) or not _STEM_RE.fullmatch(stem):
             return ""
         for cand in (os.path.join(d, topic, stem + ".md"),
                      os.path.join(d, topic, stem + "-auto.md")):
             if os.path.isfile(cand) and _within_handoffs(cand) and not is_pending(cand):
                 return cand
-        matches = sorted(g for g in glob.glob(os.path.join(d, topic, stem + "*.md"))
+        pattern = os.path.join(d, glob.escape(topic), glob.escape(stem) + "*.md")
+        matches = sorted(g for g in glob.glob(pattern)
                          if _within_handoffs(g) and not is_pending(g))
         return matches[0] if len(matches) == 1 else ""
-    if not q or q in (".", "..") or os.sep in q:
+    if not valid_slug(q):
         return ""
     f = latest_ready_in_topic(q)
     return f if (f and _within_handoffs(f)) else ""
@@ -809,14 +887,32 @@ def slugify(s):
 
 
 def unique_topic_slug(text):
+    """Derive an unused topic slug and RESERVE it by creating the directory.
+
+    Reservation is the point: the old isdir()-then-use check let two topicless
+    sessions starting in the same second both settle on "topic-<ts>" and silently
+    merge two unrelated workstreams into one topic. os.mkdir is atomic, so exactly
+    one racer can win a given name and the loser moves on to the next suffix."""
     base = slugify(text)
-    if not base:
+    if not valid_slug(base):
         base = "topic-" + timestamp()
-    slug = base
-    n = 2
-    while os.path.isdir(topic_dir(slug)):
-        slug = "%s-%d" % (base, n)
-        n += 1
+    for n in range(1, 1000):
+        slug = base if n == 1 else "%s-%d" % (base, n)
+        try:
+            os.makedirs(topic_dir(slug))
+            return slug
+        except FileExistsError:
+            continue
+        except OSError:
+            return slug          # can't create (read-only fs): caller degrades
+    # 999 collisions on one base: fall back to a name that cannot already be
+    # taken, and still return only after attempting to reserve it — never hand
+    # back a name this function has not tried to claim.
+    slug = "%s-%d" % (base, os.getpid())
+    try:
+        os.makedirs(topic_dir(slug), exist_ok=True)
+    except OSError:
+        pass
     return slug
 
 
@@ -928,10 +1024,43 @@ def rel(path):
     return path[len(base):] if path.startswith(base) else path
 
 
+def ignored_notice(path):
+    """One-time, per-project notice when saved handoffs land somewhere git ignores.
+
+    V2-SPEC §3.3 keeps the commit posture neutral — the plugin never edits
+    .gitignore — but a wholesale-ignored `.claude/` silently turns a feature sold
+    as shareable into a local-only one, and git cannot re-include a subtree under
+    it. Returns the message once per project, then "" forever after."""
+    marker = os.path.join(state_dir(), ".ignore-notice")
+    if os.path.exists(marker) or not in_git():
+        return ""
+    try:
+        r = subprocess.run(["git", "-C", project_dir(), "check-ignore", "-q", path],
+                           capture_output=True)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if r.returncode != 0:                      # 1 = not ignored, 128 = error
+        return ""
+    ensure_state()
+    atomic_write(marker, str(now_ms()))
+    return ("Note: git ignores %s, so handoffs in this project stay local — they won't be "
+            "committed or shared with teammates. That's a valid setup; if you'd rather track "
+            "them, ignore `.claude/` granularly (e.g. only `.claude/settings.local.json`) "
+            "instead of as a whole, because git cannot re-include a subtree under a fully "
+            "ignored directory. Shown once per project." % rel(path))
+
+
 # --- Age-based GC sweep -----------------------------------------------------
 
-def gc_sweep(ttl_days=14):
-    """Reclaim stale ephemeral state (incl. crash/kill leaks). Throttled ~1/hr."""
+def gc_sweep(ttl_days=14, keep_sid=""):
+    """Reclaim stale ephemeral state (incl. crash/kill leaks). Throttled ~1/hr.
+
+    `keep_sid` is the live session's id and is never reclaimed: a session resumed
+    from a transcript older than the TTL keeps its own id, so an age-only rule
+    would delete the topic binding of the very session doing the sweeping.
+
+    The sweep only ever touches ephemeral state, never committed handoffs
+    (V2-SPEC.md "the sweep never touches committed handoffs")."""
     ensure_state()
     sdir, cdir, sweepdir = sessions_dir(), cwd_dir(), state_dir()
     stamp = os.path.join(sweepdir, ".gc.stamp")
@@ -954,6 +1083,8 @@ def gc_sweep(ttl_days=14):
     cutoff_mtime = time.time() - ttl_days * 1440 * 60
     if os.path.isdir(sdir):
         for fn in os.listdir(sdir):
+            if keep_sid and fn.startswith(keep_sid + "."):
+                continue                    # never reclaim the live session
             fp = os.path.join(sdir, fn)
             try:
                 if os.path.isfile(fp) and os.path.getmtime(fp) < cutoff_mtime:
@@ -973,6 +1104,14 @@ def gc_sweep(ttl_days=14):
     cutoff_ms = now - ttl_days * 86400 * 1000
     if os.path.isdir(cdir):
         for fn in os.listdir(cdir):
+            if fn.endswith(".ptr"):         # pointer files left by <=3.2.0
+                fp = os.path.join(cdir, fn)
+                try:
+                    if os.path.getmtime(fp) < cutoff_mtime:
+                        os.remove(fp)
+                except OSError:
+                    pass
+                continue
             if not fn.endswith(".clears"):
                 continue
             cf = os.path.join(cdir, fn)
@@ -1012,6 +1151,45 @@ directory once you've confirmed the migration.
 def _ts_to_iso(ts):
     m = re.match(r"^(\d{4}-\d{2}-\d{2})-(\d{2})(\d{2})(\d{2})$", ts or "")
     return "%sT%s:%s:%s" % (m.group(1), m.group(2), m.group(3), m.group(4)) if m else ""
+
+
+def _normalize_legacy_fm(raw, sid, created, kind, fn):
+    """A v1 handoff may already open with a `---` block, but a v1 block lacks the
+    schema-2 keys the plugin indexes on. Copying it verbatim produced a migrated
+    file with no `topic:`, which discovery then skipped — migrated but invisible.
+    Splice in only the keys that are missing, leaving existing values alone."""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw                     # non-UTF-8: copy byte-for-byte, never corrupt
+    lines = text.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return raw
+    end = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end = i
+            break
+    if end is None:                    # unterminated block: leave it alone
+        return raw
+    present = set()
+    for ln in lines[1:end]:
+        m = _FM_LINE.match(ln)
+        if m:
+            present.add(m.group(1))
+    add = []
+    for key, val in (("schema", "2"),
+                     ("topic", "legacy"),
+                     ("topic_title", '"Legacy (pre-v2) handoffs"'),
+                     ("session_id", sid),
+                     ("created", created),
+                     ("kind", kind),
+                     ("migrated_from", ".handoff/" + fn)):
+        if key not in present and val:
+            add.append("%s: %s" % (key, val))
+    if not add:
+        return raw
+    return "\n".join([lines[0]] + add + lines[1:]).encode("utf-8")
 
 
 def migrate_legacy():
@@ -1068,7 +1246,9 @@ def migrate_legacy():
 
         first_line = raw.split(b"\n", 1)[0].rstrip(b"\r")
         if first_line == b"---":
-            if not atomic_write_bytes(dest, raw):    # already carries frontmatter: copy verbatim
+            # Already carries frontmatter: keep it, but backfill the schema-2 keys
+            # discovery needs so the migrated copy is actually findable.
+            if not atomic_write_bytes(dest, _normalize_legacy_fm(raw, sid, created, kind, fn)):
                 failed = True
         else:
             fm = ["---", "schema: 2", "topic: legacy",

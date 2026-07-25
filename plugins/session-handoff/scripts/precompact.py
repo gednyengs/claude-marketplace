@@ -22,12 +22,17 @@ def body():
         return
     sid = lib.session_short(payload)
     trigger = lib.payload_field(payload, "trigger") or "auto"
+    degraded = lib.session_is_degraded(sid)
 
     # Resolve this session's topic; lazily create a provisional one if it has none.
-    slug = lib.session_topic_get(sid)
+    # A degraded session has no usable identity, so it neither reads nor writes the
+    # shared "nosession" binding — otherwise two unidentified sessions would adopt
+    # each other's topic. It still gets a snapshot, just under its own fresh topic.
+    slug = "" if degraded else lib.safe_slug(lib.session_topic_get(sid))
     if not slug:
         slug = lib.unique_topic_slug("topic-" + lib.timestamp())
-        lib.session_topic_set(sid, slug)
+        if not degraded:
+            lib.session_topic_set(sid, slug)
 
     # Best-effort human title (carried from an earlier handoff in this topic).
     title = slug
@@ -36,6 +41,22 @@ def body():
         t = lib.fm_get(latest, "topic_title")
         if t:
             title = t
+
+    # A degraded run has no identity PostCompact could use to find this exact file
+    # again — every degraded session resolves to the same "nosession" key, so
+    # "complete the pending skeleton" would let one such session finish (or adopt)
+    # another's. Publish it finished instead: PostCompact writes its summary to a
+    # separate file rather than reaching for a skeleton that may not be its own.
+    if degraded:
+        status = "complete"
+        note = ["> Auto-snapshot taken before context compaction (trigger: %s)." % trigger,
+                "> This session had no usable session id, so the compaction summary is saved",
+                "> as a separate handoff rather than being merged into this file."]
+    else:
+        status = "pending"
+        note = ["> Auto-snapshot taken before context compaction (trigger: %s)." % trigger,
+                "> Claude Code's compaction summary is persisted into this file once compaction",
+                "> completes; until then this is a repo-state safety record."]
 
     f = lib.new_handoff_path("auto", sid, slug)
     content = "\n".join([
@@ -46,15 +67,13 @@ def body():
         "session_id: " + sid,
         "created: " + lib.created_stamp(),
         "kind: auto",
-        "status: pending",
+        "status: " + status,
         "compact_trigger: " + trigger,
         "---",
         "",
         "# Handoff — " + lib.iso(),
         "",
-        "> Auto-snapshot taken before context compaction (trigger: %s)." % trigger,
-        "> Claude Code's compaction summary is persisted into this file once compaction",
-        "> completes; until then this is a repo-state safety record.",
+    ] + note + [
         "",
         lib.facts(),
     ])
@@ -74,5 +93,5 @@ def body():
           "and blockers; and the files/functions touched and why. Do not broaden the scope of an "
           "explicitly narrow user request; within that scope, capture these where they apply.")
 
-
-lib.run_hook(body)
+if __name__ == "__main__":          # importable for tests; hooks run it as a script
+    lib.run_hook(body)
