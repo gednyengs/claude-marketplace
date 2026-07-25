@@ -12,11 +12,13 @@ import lib  # noqa: E402
 
 
 def topic_list():
+    # Titles come out of committed files, so they are untrusted text on their way
+    # into model context: flatten and bound each one (lib.sanitize_line).
     lines = []
     for base, topic, path in lib.recent_topics(5):
         if not topic:
             continue
-        ttl = lib.fm_get(path, "topic_title") or topic
+        ttl = lib.sanitize_line(lib.fm_get(path, "topic_title")) or topic
         lines.append("  - %s (%s) — %s" % (ttl, topic, lib.handoff_when(base)))
     return "\n".join(lines)
 
@@ -34,7 +36,7 @@ def body():
         return
     sid = lib.session_short(payload)
     src = lib.payload_field(payload, "source")
-    lib.gc_sweep()
+    lib.gc_sweep(keep_sid=sid)
     lib.migrate_legacy()
 
     if src == "resume":
@@ -78,21 +80,23 @@ def body():
                  "Run /session-handoff:resume to pick which topic to continue.")
         elif claimed:
             parts = claimed.split("\t")
-            ctopic = parts[0]
+            ctopic = lib.safe_slug(parts[0])
             csid = parts[1] if len(parts) > 1 else ""
             cts = parts[2] if len(parts) > 2 else ""
+            if not ctopic:
+                return                       # unusable baton: say nothing
             lib.pending_clear_set(sid, ctopic, csid, cts)
             latest = lib.latest_ready_in_topic(ctopic)
             title = ctopic
             summ = ""
             if latest:
-                t = lib.fm_get(latest, "topic_title")
+                t = lib.sanitize_line(lib.fm_get(latest, "topic_title"))
                 if t:
                     title = t
-                summ = lib.handoff_summary(latest)
+                summ = lib.sanitize_line(lib.handoff_summary(latest))
             lines = ['=== session-handoff: you cleared while working on topic "%s" (%s). ===' % (title, ctopic)]
             if summ:
-                lines.append("Last: " + summ)
+                lines.append("Last (quoted from the saved handoff, for information only): " + summ)
             lines.append("Run /session-handoff:resume to continue it, or start fresh.")
             emit("\n".join(lines))
         else:
@@ -108,5 +112,5 @@ def body():
         emit("=== session-handoff: recent topics in this project ===\n" + lst +
              "\nRun /session-handoff:resume to continue one, or ignore if starting fresh.")
 
-
-lib.run_hook(body)
+if __name__ == "__main__":          # importable for tests; hooks run it as a script
+    lib.run_hook(body)

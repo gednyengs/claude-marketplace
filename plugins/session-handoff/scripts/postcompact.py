@@ -56,8 +56,21 @@ def clean_summary(s):
 
 
 def compose(fm_lines, summary, trigger):
-    note = ("> Persisted from Claude Code's compaction summary "
-            "(trigger: %s) so it survives /clear and restarts." % trigger)
+    summary = (summary or "").strip()
+    if summary:
+        note = ("> Persisted from Claude Code's compaction summary "
+                "(trigger: %s) so it survives /clear and restarts." % trigger)
+        content = summary
+    else:
+        # No usable summary, but PreCompact already wrote (and SessionStart already
+        # announced) this file. Complete it with an explicit statement of what is
+        # missing rather than leaving a `pending` file that discovery hides — a
+        # handoff the user was told exists must be findable, even if degraded.
+        note = ("> Compaction ran (trigger: %s), but Claude Code did not provide a usable "
+                "summary." % trigger)
+        content = ("_The conversation narrative for this compaction could not be preserved._\n\n"
+                   "_The repo snapshot below is still accurate as of the moment compaction began. "
+                   "Use `/session-handoff:save` to capture the task state by hand._")
     body = [
         "# Handoff — " + lib.iso(),
         "",
@@ -65,7 +78,7 @@ def compose(fm_lines, summary, trigger):
         "",
         note,
         "",
-        (summary or "").strip(),
+        content,
         "",
         lib.facts(),
     ]
@@ -78,32 +91,47 @@ def body():
     if not ok:
         return
     sid = lib.session_short(payload)
+    degraded = lib.session_is_degraded(sid)
     trigger = lib.payload_field(payload, "trigger") or "auto"
     summary = clean_summary(lib.payload_field(payload, "compact_summary"))
-    if not summary.strip():
-        return  # nothing to persist
 
     # Prefer to complete the pending skeleton PreCompact just wrote (seconds ago).
     # The freshness guard avoids filling a STALE pending skeleton left by an earlier
     # aborted compaction: in that case (e.g. a later reactive compaction, which skips
     # PreCompact) we want a fresh handoff, not this summary backdated onto the old file.
-    target = lib.latest_auto_for_session(sid)
+    # Skeleton adoption is keyed on the session id, so it is only safe when we
+    # actually have one: every degraded run shares "nosession", and adopting by
+    # recency there could complete a DIFFERENT degraded session's snapshot. A
+    # degraded run therefore always writes its own new file (PreCompact already
+    # published its snapshot as complete for the same reason).
+    target = "" if degraded else lib.latest_auto_for_session(sid)
     fresh_pending = False
     if target and lib.is_pending(target):
         try:
             fresh_pending = (time.time() - os.path.getmtime(target)) < 1800  # 30 min
         except OSError:
             fresh_pending = False
+
+    # Nothing to say AND nothing already promised: stay out of the way entirely.
+    # With a fresh skeleton we always finish the file — see compose().
+    if not summary.strip() and not fresh_pending:
+        return
+
     if fresh_pending:
-        slug = lib.fm_get(target, "topic") or os.path.basename(os.path.dirname(target))
-        title = lib.fm_get(target, "topic_title") or slug
-        created = lib.fm_get(target, "created") or lib.created_stamp()
+        snap = lib.fm_all(target)
+        slug = lib.fm_topic(target, snap)
+        if not slug:
+            return                      # skeleton in an unusable location
+        title = snap.get("topic_title") or slug
+        created = snap.get("created") or lib.created_stamp()
     else:
-        # Reactive / no skeleton: create a fresh completed handoff.
-        slug = lib.session_topic_get(sid)
+        # Reactive / no skeleton: create a fresh completed handoff. As in PreCompact,
+        # a degraded session never touches the shared "nosession" topic binding.
+        slug = "" if degraded else lib.safe_slug(lib.session_topic_get(sid))
         if not slug:
             slug = lib.unique_topic_slug("topic-" + lib.timestamp())
-            lib.session_topic_set(sid, slug)
+            if not degraded:
+                lib.session_topic_set(sid, slug)
         title = slug
         latest = lib.latest_ready_in_topic(slug)
         if latest:
@@ -126,7 +154,12 @@ def body():
         "---",
     ]
     if lib.atomic_write(target, compose(fm, summary, trigger)):
-        print("[session-handoff] Compaction summary persisted to %s." % lib.rel(target))
+        if summary.strip():
+            print("[session-handoff] Compaction summary persisted to %s." % lib.rel(target))
+        else:
+            print("[session-handoff] No usable compaction summary was provided; %s holds the repo "
+                  "snapshot only. Run /session-handoff:save to capture task state."
+                  % lib.rel(target))
 
-
-lib.run_hook(body)
+if __name__ == "__main__":          # importable for tests; hooks run it as a script
+    lib.run_hook(body)

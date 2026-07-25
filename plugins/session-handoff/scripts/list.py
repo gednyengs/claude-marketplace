@@ -14,9 +14,10 @@ import lib  # noqa: E402
 
 
 def row(f):
+    # Summaries are read out of committed files: flatten before display.
     base = os.path.basename(f)
     when = lib.handoff_when(base) or "unknown time"
-    summ = lib.handoff_summary(f) or "(no task summary)"
+    summ = lib.sanitize_line(lib.handoff_summary(f)) or "(no task summary)"
     kind = "auto" if lib.is_auto(base) else "manual"
     return ["- %s · %s · %s" % (lib.handoff_id(f), when, kind), "    " + summ]
 
@@ -24,7 +25,7 @@ def row(f):
 def main():
     _ok, rest = lib.bootstrap(sys.argv[1:], strict=True)
     sid = lib.session_short()
-    lib.gc_sweep()
+    lib.gc_sweep(keep_sid=sid)
     lib.migrate_legacy()
 
     # A bare integer is MAX; --any switches to the cross-topic view.
@@ -38,7 +39,7 @@ def main():
         # ignore non-numeric noise / empty
 
     # The current topic is the SESSION's own topic (the cwd pointer is only a hint).
-    cur = "" if lib.session_is_degraded(sid) else lib.session_topic_get(sid)
+    cur = "" if lib.session_is_degraded(sid) else lib.safe_slug(lib.session_topic_get(sid))
 
     out = []
     # --- All-topics view (explicit --any, or no current topic) ---
@@ -53,7 +54,7 @@ def main():
         for base, topic, path in topics:
             if not path:
                 continue
-            ttl = lib.fm_get(path, "topic_title") or topic
+            ttl = lib.sanitize_line(lib.fm_get(path, "topic_title")) or topic
             out.append("")
             out.append("**%s** (%s)" % (ttl, topic))
             out.extend(row(path))
@@ -61,9 +62,10 @@ def main():
         return
 
     # --- Current-topic view ---
-    d = lib.topic_dir(cur)
+    d = lib.topic_dir(cur)          # `cur` is already laundered through safe_slug
     files = ([f for f in sorted(glob.glob(os.path.join(d, "*.md")), reverse=True)
-              if not lib.is_pending(f)][:max_n] if os.path.isdir(d) else [])
+              if lib._within_handoffs(f) and not lib.is_pending(f)][:max_n]
+             if os.path.isdir(d) else [])
     if not files:
         print("_No handoffs yet in the current topic '%s'. Run /session-handoff:list --any to see other topics._" % cur)
         return
@@ -74,5 +76,5 @@ def main():
             out.extend(row(f))
     print("\n".join(out))
 
-
-main()
+if __name__ == "__main__":          # importable for tests; commands run it as a script
+    main()

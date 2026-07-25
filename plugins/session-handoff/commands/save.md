@@ -30,11 +30,16 @@ Now do the following:
    - `# Handoff — <human-readable date/time>`
    - `## Task & progress` — the goal; what's done; what's in progress; what's not started.
    - `## Key decisions & rationale` — important choices and *why*, so they aren't relitigated.
+   - `## Files & code touched` — the specific files and functions central to this work and why each
+     matters, so the next session knows where to look without re-deriving it. Include short,
+     load-bearing snippets where a one-line description won't do.
    - `## Approaches tried & dead ends` — OPTIONAL: include this section only if you hit attempts that
      would be expensive or tempting to repeat (what was tried, why it failed or was abandoned). Omit
      the section entirely when there were none.
    - `## Open questions & blockers` — unresolved questions, things waiting on input, known risks.
-   - `## Next steps` — an ordered, actionable checklist of what to do next.
+   - `## Next steps` — an ordered, actionable checklist of what to do next. If you stopped mid-step,
+     make item 1 the in-flight action and quote VERBATIM where you left off (the exact edit, command,
+     or user request underway) so the next session resumes without drift.
    - `## Environment, commands & results` — how to build/test/run, env vars, and setup. Start from
      the detected commands in the snapshot above and refine them with what you actually ran this
      session. Also record meaningful pass/fail results or measurements, and paths to any data files
@@ -47,17 +52,18 @@ Now do the following:
    a constraint to record, or something to emphasize. Work it into the relevant section(s), while
    keeping every required section and the frontmatter exactly as specified.
 4. Do **not** write secrets, tokens, or credentials into the handoff.
-5. **After writing**, run this to record the save (sets the session's topic, refreshes the
-   per-directory pointer, and clears consumed pending state). Pass the same `PATH` and `TOPIC`
-   printed above — the script verifies the file before recording, so use the exact values:
+5. **After writing**, run this to record the save (binds the session to the topic and clears
+   consumed pending state). Pass the same `PATH` and `TOPIC` printed above — the script verifies
+   the file before recording, so use the exact values:
 
    ```
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/save-record.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" <PATH> <TOPIC>
    ```
 
-6. Print the relative path, the topic, and a 3–5 bullet summary of what you captured. **If a
-   `NOTICE:` line was printed above, relay it to the user** (it means you started a new topic
-   while a recently-cleared topic was still resumable).
+6. Print the relative path, the topic, and a 3–5 bullet summary of what you captured. **Relay any
+   `NOTICE:` line** from either script — from `new-path.py` it means you started a new topic while a
+   recently-cleared topic was still resumable; from `save-record.py` it means git ignores the
+   handoff location, so these files stay local instead of being shared.
 
 This handoff is meant to be committed with the repo, so write it for your future self and
 your teammates.

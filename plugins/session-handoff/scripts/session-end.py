@@ -16,13 +16,13 @@ def body():
         return
     sid = lib.session_short(payload)
     reason = lib.payload_field(payload, "reason")
-    lib.gc_sweep()
+    lib.gc_sweep(keep_sid=sid)
 
     if reason == "clear" and not lib.session_is_degraded(sid):
-        topic = lib.session_topic_get(sid)
+        topic = lib.safe_slug(lib.session_topic_get(sid))
         # Only leave a baton if this session was actually on a topic worth continuing.
         if topic:
             lib.clears_append(sid, topic)
 
-
-lib.run_hook(body)
+if __name__ == "__main__":          # importable for tests; hooks run it as a script
+    lib.run_hook(body)

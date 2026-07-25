@@ -14,7 +14,7 @@ import lib  # noqa: E402
 def main():
     _ok, rest = lib.bootstrap(sys.argv[1:], strict=True)
     sid = lib.session_short()
-    lib.gc_sweep()
+    lib.gc_sweep(keep_sid=sid)
     lib.migrate_legacy()
 
     # Parse --topic <slug> (or --topic=slug); everything else is the note.
@@ -38,9 +38,13 @@ def main():
     # give it a name.
     is_new = False
     if topic_arg:
-        slug = lib.slugify(topic_arg) or lib.unique_topic_slug(topic_arg)
+        # slugify() already strips everything outside [a-z0-9-]; safe_slug is the
+        # explicit gate, so a --topic of "../../etc" can never reach a path.
+        slug = lib.safe_slug(lib.slugify(topic_arg))
+        if not slug:
+            slug = lib.unique_topic_slug(topic_arg)
     else:
-        recorded = lib.session_topic_get(sid)
+        recorded = lib.safe_slug(lib.session_topic_get(sid))
         if recorded:
             slug = recorded
         else:
@@ -97,12 +101,12 @@ def main():
         out.append("----- END USER NOTE -----")
 
     if is_new:
-        pend = lib.pending_clear_topic(sid)
+        pend = lib.safe_slug(lib.pending_clear_topic(sid))
         if pend and pend != slug:
             out.append("")
             out.append("NOTICE: Starting new topic '%s'. You recently cleared topic '%s' — re-run with "
                        "`--topic %s` to continue that one instead." % (slug, pend, pend))
     print("\n".join(out))
 
-
-main()
+if __name__ == "__main__":          # importable for tests; commands run it as a script
+    main()

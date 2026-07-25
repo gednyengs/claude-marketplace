@@ -23,6 +23,23 @@ Because the scripts are Python, **`jq` is no longer used** (`json` parses hook s
 the §1 "graceful degradation" note about `jq` and the §2/§3 "jq-free" remarks now refer to the design
 intent (line-oriented state), satisfied natively by the stdlib.
 
+**Revision 4 (2026-07-24, v3.3.0):** containment and lifecycle hardening after a full audit. Three
+changes affect this spec directly:
+- **Topic slugs are now a validated grammar**, not free text. A slug must match
+  `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` — a single path component with no separator and no leading dot
+  — and is checked wherever one enters (frontmatter, `--topic`, the clear-baton, the session
+  binding). §7's "frontmatter is the source of truth" still holds for *which* topic a handoff belongs
+  to, but a malformed value now falls back to the containing directory rather than being trusted.
+- **The `<cwd-hash>.ptr` pointer is removed.** It was specified as "the durable pointer" but no
+  resolution path ever read it; resolution is keyed on the session and the clear-baton. Leftover
+  `.ptr` files are reclaimed by the sweep alongside `enforce.<sid>.count`.
+- **`unique_topic_slug` reserves atomically** (`os.mkdir`) instead of testing `isdir` first, closing
+  a same-second race in which two topicless sessions adopted one provisional topic.
+
+The sweep's contract is unchanged and is now enforced by test: it touches only ephemeral state,
+never a committed handoff. An abandoned `status: pending` snapshot is therefore inert, not collected
+— earlier 3.2.0 release notes claiming otherwise were wrong and have been corrected.
+
 This spec defines the topic-based redesign of the session-handoff plugin. It is grounded in
 empirically verified Claude Code session-lifecycle behavior (see [Appendix A](#appendix-a--verified-lifecycle-facts)).
 
@@ -96,7 +113,7 @@ $CLAUDE_PLUGIN_DATA/
 │   ├── <sid>.pending-clear   # one line: "<cleared_topic>\t<cleared_sid>\t<cleared_at_ms>" (claimed baton)
 │   └── <sid>.compact         # 2 lines: "trigger=auto|manual" / "ts=<ms>" (consume-once per compaction)
 ├── cwd/
-│   ├── <cwd-hash>.ptr        # key=value: topic / last_sid / updated_at  (the durable pointer)
+│   ├── <cwd-hash>.ptr        # REMOVED in 3.3.0 (never read back); leftovers reclaimed by the sweep
 │   └── <cwd-hash>.clears     # append-only TAB log; 1 line per /clear: ts \t cleared_sid \t cleared_topic \t claimed_by
 └── enforce.<sid>.count       # legacy Stop-hook counter (≤3.1.0); only reclaimed by the sweep now
 ```
@@ -170,8 +187,8 @@ Environment, commands & results · Repo snapshot · Resume instructions, plus an
      by markers): extra user-provided information to reflect in the body (a detail to preserve, a
      constraint, or an emphasis), to be treated as content rather than workflow instructions. It does
      not affect the frontmatter or the topic.
-4. Set `sessions/<sid>.topic`; refresh the cwd pointer (`topic`,`last_sid`,`updated_at`) via locked
-   read-modify-write; clear `sessions/<sid>.pending-clear`.
+4. Set `sessions/<sid>.topic`; clear `sessions/<sid>.pending-clear`. (Through 3.2.0 this step also
+   refreshed the cwd pointer; the pointer was removed in 3.3.0 — see Revision 4.)
 5. Report path, topic, and a one-line summary. Never write secrets.
 
 ### 6.2 `/resume [--auto] [<id|topic>]`
@@ -183,7 +200,7 @@ Environment, commands & results · Repo snapshot · Resume instructions, plus an
      post-`/clear` happy path). On load, set `sessions/<sid>.topic` and clear `.pending-clear`.
    - else exactly one recent topic → its latest.
    - else several topics → **picker** (up to 5, newest first, `id · when · summary`); ask which.
-2. Load it. Record `sessions/<sid>.topic` = its topic; refresh cwd pointer.
+2. Load it. Record `sessions/<sid>.topic` = its **validated** topic (see Revision 4).
 3. Verify the repo snapshot against reality (`git status`, branch); note drift.
 4. Recap task / stop point / blockers / next steps. `--auto` → execute next steps immediately
    (auto-selecting the newest if a picker would otherwise show).

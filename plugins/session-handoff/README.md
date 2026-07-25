@@ -71,6 +71,23 @@ as a dependency link.
 Browse handoffs in your current topic, newest first. Add `--any` to see the latest handoff for
 every topic in the project. It's read-only, and each row's id works with `load` and `resume`.
 
+### A note on command arguments
+
+Claude Code substitutes a slash command's arguments into the command body as plain text, so the
+arguments you type reach the underlying script through your shell. Shell metacharacters are
+therefore live: `;`, `|`, `&&`, backticks, `$(…)`, and unbalanced quotes will be interpreted rather
+than passed through. In practice this bites on ordinary prose — `/session-handoff:save fix the
+parser's bug` ends in an unterminated quote and the command fails.
+
+Keep notes free of shell punctuation, or quote the whole note:
+
+```
+/session-handoff:save "fix the parser's bug"
+```
+
+Nothing here crosses a privilege boundary — it is your own shell, running commands you typed — but
+it does mean a note is not a free-text field.
+
 ## What it captures
 
 Each handoff records:
@@ -127,11 +144,25 @@ handoff. Use separate git worktrees if that matters for your workflow.
 
 ## Keeping handoffs in git
 
-Saved handoffs live under `.claude/sekekama/session-handoff/handoffs/<topic>/` and are committed
-with your repo by default. If you ignore `.claude/`, ignore it granularly (for example, only
-`.claude/settings.local.json`) rather than the whole directory, because git can't re-include a
-subtree under a fully ignored `.claude/`. The plugin's temporary bookkeeping lives outside the
-repo, so it's never committed either way.
+Saved handoffs live under `.claude/sekekama/session-handoff/handoffs/<topic>/`. Whether they are
+tracked is entirely your project's call — the plugin never edits `.gitignore` and never forces
+anything into git. If your project doesn't ignore `.claude/`, they're committed like any other file
+and travel to your teammates.
+
+If your project **does** ignore `.claude/` wholesale, handoffs still work perfectly, but they stay
+local: nothing is shared. The first time you save into an ignored location the plugin says so once,
+so the setup is never silent. To track them, ignore `.claude/` granularly (for example, only
+`.claude/settings.local.json`) rather than the whole directory — git can't re-include a subtree
+under a fully ignored `.claude/`. The plugin's temporary bookkeeping normally lives outside
+the repo; if Claude Code supplies no plugin-data directory it falls back to an in-repo `.state/`
+that ships with its own `.gitignore`, so it is never committed either way.
+
+**Review auto-snapshots before you commit them.** A handoff you write by hand is composed under an
+explicit instruction to keep secrets out. The `-auto.md` snapshots are different: their body is
+Claude Code's compaction summary of the whole conversation, persisted verbatim. If a token, key, or
+`.env` value was pasted into that conversation, it can land in the file — and committing it puts it
+in your history. If your work involves credentials, either read auto-snapshots before staging them
+or ignore `*-auto.md` and rely on `/session-handoff:save` instead.
 
 ## Migrating from v1
 
@@ -154,6 +185,21 @@ When compacting, preserve:
 - current task state, blockers, and next steps
 - key decisions and constraints
 ```
+
+## Development
+
+The test suite is standard-library `unittest` with no fixtures on disk — each test builds a
+throwaway project directory:
+
+```bash
+python3 plugins/session-handoff/tests/test_session_handoff.py
+# or
+python3 -m unittest discover -s plugins/session-handoff/tests
+```
+
+It covers the compaction-summary parser (which is coupled to a Claude Code output format that can
+drift), path containment and the topic-slug grammar, the `/clear` baton protocol, the GC sweep,
+legacy migration, and an end-to-end run of the command scripts as the slash commands invoke them.
 
 ## Requirements
 
