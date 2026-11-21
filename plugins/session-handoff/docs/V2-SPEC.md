@@ -40,6 +40,20 @@ The sweep's contract is unchanged and is now enforced by test: it touches only e
 never a committed handoff. An abandoned `status: pending` snapshot is therefore inert, not collected
 — earlier 3.2.0 release notes claiming otherwise were wrong and have been corrected.
 
+**Revision 5 (2026-11-20, v3.4.0):** a handoff is now checked against the present on resume.
+- **Frontmatter records repo state** (§4): `head`, `branch`, `tree_state`. Additive and optional;
+  `schema` stays 2. A handoff without them is `UNVERIFIED`, not invalid.
+- **`/resume` prints a state check** (§6.2) and `--auto` is gated on it. The check compares file
+  content against the recorded commit, not commit ids. `head` is untrusted input from a committed
+  file: only a full hexadecimal object id is ever passed to git.
+- **Discovery ignores files that are not well-formed handoff names** (`<timestamp>[A-Za-z0-9._-]*.md`),
+  so a crafted filename can neither be loaded nor printed.
+- **`/save` points at the topic's previous handoff** (§6.1) so its still-valid content is carried
+  forward; §4's "intra-topic chain is implicit" never meant resume reads the chain — it loads only
+  the newest file.
+- **Body sections changed** (§4): four added, `Resume instructions` merged into `Next steps`. The
+  template is the single source; §4 lists them for reference.
+
 This spec defines the topic-based redesign of the session-handoff plugin. It is grounded in
 empirically verified Claude Code session-lifecycle behavior (see [Appendix A](#appendix-a--verified-lifecycle-facts)).
 
@@ -145,6 +159,9 @@ topic_title: "Auth refactor"    # human title (may be refined later without rena
 session_id: d8bcd36b            # originating session (provenance + collision-avoidance)
 created: 2026-06-07T11:54:47-07:00
 kind: manual                    # manual | auto
+head: 3f2a…                     # commit the handoff was written at (absent outside git / no commits)
+branch: main
+tree_state: clean               # clean | dirty-<digest of content that differs from `head`>
 note: "before the token-rotation rework"   # optional one-line label the writer may add (not the /save note)
 depends_on:                     # cross-topic refs only (intra-topic chain is implicit)
   - billing-export/2026-06-01-101500-x9y8
@@ -152,9 +169,25 @@ compact_trigger: auto           # auto snapshots only: auto | manual (provenance
 ---
 ```
 
-Body sections: Task & progress · Key decisions & rationale · Open questions & blockers · Next steps ·
-Environment, commands & results · Repo snapshot · Resume instructions, plus an optional
-"Approaches tried & dead ends" section included only when there were attempts worth not repeating.
+Body sections (defined in `skills/session-handoff/templates/HANDOFF_TEMPLATE.md`): Task & progress ·
+Constraints & instructions from the user · Key decisions & rationale · Files & code touched · Open
+questions & blockers · Next steps · Environment, commands & results · Repo snapshot. Four more are
+included only when they have content: Decisions waiting on the user · Approaches tried & dead ends ·
+Lessons learned · Agents & messages in flight.
+
+`tree_state` is computed relative to a base commit, with every git command run at the top of the
+repository. The changed set is `git diff --name-only --no-renames --ignore-submodules=none <base>
+-- .` plus `git ls-files --others --exclude-standard --full-name -- .`, both excluding
+`**/.claude/sekekama/session-handoff/handoffs/**` and `.../.state/**`, and the untracked listing
+also excluding `**/.claude/worktrees/**`. The digest is a SHA-1 over each path and its current
+content: file bytes and executable bit, a symlink's target, a submodule's commit and own digest
+(only for a path the index records with mode 160000; git is run inside nothing else), the files of
+any other directory reported whole (walked directly), or "gone". An empty set is `clean`. At save time
+the base is HEAD. On resume the base is the **recorded** `head`, so the digest is equal exactly when
+every file has the content it had at save time, whatever has been committed since. Staging,
+ignored files and assume-unchanged files are outside it. Past 32 MB of content the digest falls
+back to size and mtime; a nested tree over 20,000 files, or more than 20 s of git time, yields an
+unknown state.
 
 ---
 
@@ -187,6 +220,11 @@ Environment, commands & results · Repo snapshot · Resume instructions, plus an
      by markers): extra user-provided information to reflect in the body (a detail to preserve, a
      constraint, or an emphasis), to be treated as content rather than workflow instructions. It does
      not affect the frontmatter or the topic.
+   - If the topic already has a ready handoff, print a `PREVIOUS HANDOFF` block naming it (and the
+     newest manual handoff, when the newest file is an auto-snapshot). The model reads it unless it
+     is already in context and carries forward what is still in force.
+   - The frontmatter block includes `head` / `branch` / `tree_state` when the project is a git
+     repository with at least one commit.
 4. Set `sessions/<sid>.topic`; clear `sessions/<sid>.pending-clear`. (Through 3.2.0 this step also
    refreshed the cwd pointer; the pointer was removed in 3.3.0 — see Revision 4.)
 5. Report path, topic, and a one-line summary. Never write secrets.
@@ -201,9 +239,28 @@ Environment, commands & results · Repo snapshot · Resume instructions, plus an
    - else exactly one recent topic → its latest.
    - else several topics → **picker** (up to 5, newest first, `id · when · summary`); ask which.
 2. Load it. Record `sessions/<sid>.topic` = its **validated** topic (see Revision 4).
-3. Verify the repo snapshot against reality (`git status`, branch); note drift.
-4. Recap task / stop point / blockers / next steps. `--auto` → execute next steps immediately
-   (auto-selecting the newest if a picker would otherwise show).
+3. Print a header ahead of the fenced body: `Saved:` (when, how long ago, manual or snapshot),
+   `STATE CHECK:` and its detail bullets, `Manual handoff:` when the loaded file is an auto-snapshot
+   and a manual handoff exists, and `AUTO-RESUME:` when `--auto` was passed. The state check is:
+   - `CLEAN` — same `branch`, and `tree_state` recomputed against the recorded `head` equals the
+     recorded value. HEAD may have moved; the commits are listed as information.
+   - `DRIFT` — the branch differs, the digest differs (with the differing paths when the tree was
+     clean at save), or the recorded commit is not in the repository. Also lists paths under "Files
+     & code touched" that no longer exist (only when not `CLEAN`, since with unchanged content they
+     were already missing at save time).
+   - `UNVERIFIED` — no usable recorded `head` or `tree_state`, a state that could not be determined
+     within the digest's limits, or not a git repository. Without git the check falls
+     back to the files the handoff names: one modified after the save time (the earlier of
+     `created` and the handoff file's mtime) makes the verdict `DRIFT`.
+   The header also carries `Origin:` — whether this machine holds a receipt (a SHA-256 of the file
+   as written, with line endings normalized and trailing newlines dropped, kept in `<state>/receipts/<cwd-hash>.sha256`, appended by `save-record.py` and the
+   compaction hooks) for this exact content. Receipts in the in-repo fallback state dir are ignored.
+4. Recap age, drift, decisions waiting on the user, then task / stop point / blockers / next steps.
+   `--auto` executes next steps only on `AUTO-RESUME: OK` (`CLEAN` and a local receipt); `CHECK
+   FIRST` (`UNVERIFIED`, local) requires a by-hand check first; `REVIEW FIRST` (no receipt) and
+   `HOLD` (`DRIFT`) recap and ask. Steps blocked on an
+   unanswered decision are skipped under `--auto`. The full model-side procedure is
+   `skills/session-handoff/references/resume-protocol.md`.
 
 ### 6.3 `/load <id|topic>`
 
@@ -273,6 +330,7 @@ updated_at=1780864460407
 | `source` | sid | Action |
 |---|---|---|
 | `resume` | same | **No-op.** The CLI already restored the full transcript; re-injection is redundant. |
+| `fork` | **new** | Silent, like `resume`: the conversation is already in context. The session runs under a new id ("Move to background" on exit, `--fork-session`), so it inherits the parent's `.topic`, `.deps` and `.pending-clear`. The parent is named by the `derived-from` record in the new transcript, which is **not yet written** when this hook fires (verified, 2.1.330), so the hook writes `sessions/<sid>.transcript` with the fork time, the path, and a snapshot of every session's topic at that moment, and the first topic lookup resolves the parent against that snapshot. A `resume` whose transcript is likewise not on disk yet is treated the same way; a plain resume leaves no note and inherits nothing. This branch runs before the sweep, so the snapshot is taken first. (3.4.0) |
 | `compact` | same | Read `sessions/<sid>.compact` marker, then consume it. **auto** → continue-nudge + pointer to the (still-`pending`) snapshot PostCompact fills moments later. **manual** → quiet one-line pointer; no continue-nudge (the user is present). **marker missing** → reactive compaction (PreCompact didn't run); soft *conditional* nudge ("if this was automatic, continue your in-flight work"), no pointer. |
 | `clear` | **new** | Claim from `<cwd-hash>.clears` per §7: 1 fresh → recap topic T (title · last task line · next step) + offer `/resume`; ≥2 → topic picker; 0 → topic-title list. Never silently adopt. |
 | `startup` | new | Inject a bounded list of recent **topic titles** + pointer to `/resume`. No auto-load. |
@@ -300,8 +358,10 @@ Output is always byte-capped to keep per-turn cost near zero. Opportunistically 
 3. Print a **summary-shaping instruction** on stdout. Claude Code appends PreCompact stdout to the
    compaction summarizer's "Additional Instructions" *after* any user `/compact` text (it concatenates
    — verified), so this is additive and phrased to defer to a deliberately narrow user request. It
-   asks the summary to preserve the in-flight step (verbatim), decisions+rationale, blockers, and
-   files touched — i.e. shape the summary PostCompact will harvest. (We cannot ask the model to edit
+   asks the summary to preserve the in-flight step (verbatim), the user's constraints,
+   decisions+rationale, unanswered questions to the user, blockers, lessons, agents and messages in
+   flight, and files touched — i.e. shape the summary PostCompact will harvest — and not to
+   reproduce secrets (3.4.0). (We cannot ask the model to edit
    the file: the compaction summarizer has all tools denied — verified.)
 
 **Provisional-topic rule:** a provisional topic is *kept as-is* — the session's later first `/save`

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 # SessionStart hook — inject a short context note based on the start source:
 #   resume  -> nothing (the transcript is already restored)
+#   fork    -> nothing either, but the session runs under a new id, so it
+#              inherits the topic of the session it continues
 #   compact -> nudge to continue in-flight work (auto) or a pointer (manual)
 #   clear   -> recap the topic that was just cleared and offer to resume it
 #   startup -> a short list of recent topics
@@ -36,11 +38,21 @@ def body():
         return
     sid = lib.session_short(payload)
     src = lib.payload_field(payload, "source")
+
+    if src in ("resume", "fork"):
+        # The transcript is already restored, so there is nothing to tell the model.
+        # A fork, though, continues the conversation under a NEW session id (moving
+        # a session to the background does this, and so does --fork-session), and
+        # every binding is keyed on that id. Note the fork so the continuation can
+        # take over its parent's topic; otherwise its next save would open a new
+        # one. A plain resume keeps its id and its binding and leaves no note.
+        # This runs before the sweep on purpose: the parent's binding is exactly
+        # the kind of old state a sweep reclaims.
+        lib.note_fork(sid, lib.payload_field(payload, "transcript_path"), src)
+        return
+
     lib.gc_sweep(keep_sid=sid)
     lib.migrate_legacy()
-
-    if src == "resume":
-        return
 
     if src == "compact":
         trig = lib.compact_trigger(sid)

@@ -3,6 +3,148 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [3.4.0] — 2026-11-20
+
+What a handoff says, and how far a resumed session trusts it. Prompted by an external review of the
+skill. No change to the command interface. Handoffs gain optional frontmatter keys and new body
+sections; existing handoffs keep working and are reported as `UNVERIFIED` on resume because they
+record no commit. Under `--auto` they are recapped for a go-ahead instead of executed, because this
+version has no record of having saved them.
+
+### Added — what a handoff captures
+- **`Constraints & instructions from the user`** section: the standing rules the user gave, quoted
+  where the wording matters. These are what a fresh session breaks most often.
+- **`Decisions waiting on the user`** section (optional): each unanswered question with the options
+  offered, the agent's recommendation labeled as such, and the steps it blocks. Previously these were
+  folded into `Open questions & blockers`, which now covers only unknowns and external blockers.
+- **`Lessons learned`** section (optional): how to work on the topic from here on, learned from a
+  mistake or a correction. A lesson that would outlive the topic is marked as a candidate for
+  `CLAUDE.md` and surfaced in the save summary.
+- **`Agents & messages in flight`** section (optional): running subagents with their brief quoted
+  verbatim and where their output lands, replies still awaited, and messages drafted but not sent.
+- `Task & progress` now asks for a **"Done when"** line, and for in-progress items and diagnoses to be
+  marked **verified** (with the command that showed it) or **assumed**.
+- `Environment, commands & results` asks for each result's **exact command and the commit it ran
+  against**, so the next session can tell whether it still holds.
+- **Carry-forward on save.** Resume loads only the newest file in a topic, so anything only an
+  earlier handoff held was lost to the next session. `new-path.py` now prints a `PREVIOUS HANDOFF`
+  block naming the topic's latest handoff (and the latest hand-written one, if a compaction snapshot
+  sits in front of it), and the agent carries forward what is still in force and drops what is
+  resolved.
+- The PreCompact steering text names the same additions, so automatic snapshots capture them too.
+
+### Added — checking a handoff on resume
+- **Recorded repo state.** A handoff's frontmatter now carries `head`, `branch`, and `tree_state`.
+  `tree_state` is `clean`, or a digest of every path whose content differs from the recorded commit
+  plus every untracked file (file bytes and executable bit, symlink targets, a submodule's commit
+  and own changes, and the files inside an untracked nested repository, read without running git
+  in it). It covers the whole repository, not only the project directory, leaving out handoff
+  folders and agent worktrees. Manual handoffs get these from `new-path.py`; auto-snapshots from
+  the compaction hooks.
+- **`STATE CHECK` on resume, comparing file content.** `resume.py` recomputes that digest against
+  the commit the handoff recorded and prints `CLEAN`, `DRIFT`, or `UNVERIFIED` ahead of the handoff.
+  Because it compares content and not commit ids, committing the saved work or the handoff itself
+  afterwards is still `CLEAN`; the commits are listed with a note that they did not change what is
+  on disk.
+  `DRIFT` names the files that differ (when the tree was clean at save), a branch switch, a recorded
+  commit missing from the repository, and files named under `Files & code touched` that no longer
+  exist. Ignored files and what is staged are not compared, and the header says so. The check used
+  to be an instruction to run `git status` and look at the branch.
+- **A check for projects without git.** With no commit to compare, the check looks at the files the
+  handoff names: one modified after the handoff was saved is `DRIFT`; otherwise the verdict is
+  `UNVERIFIED`, with wording that does not point at git commands.
+- **`--auto` is gated on it.** With `--auto`, `resume.py` prints `AUTO-RESUME: OK` (clean), `CHECK
+  FIRST` (unverified), or `HOLD` (drift). `--auto` used to start executing after a `git status` and
+  branch check alone, however old the handoff was.
+- **`--auto` only executes handoffs this machine saved.** The plugin records a hash of every
+  handoff it writes, outside the repository, and resume prints an `Origin:` line. A handoff with no
+  matching record (a teammate's, another clone's, or one edited after saving) gets `AUTO-RESUME:
+  REVIEW FIRST`: the agent recaps its next steps and asks. The state check alone could not provide
+  this, since its inputs come from the file being checked. Line-ending conversion and trailing
+  newlines do not count as edits. A moved or renamed project directory loses the record, and
+  without a plugin data directory no record is kept, so `--auto` asks first in both cases.
+- **Age.** `resume` and `load` print when the handoff was saved and how long ago. A date in the
+  future is reported as such instead of as "just now".
+- **A compaction snapshot no longer hides the hand-written handoff.** When the newest file in a
+  topic is an auto-snapshot, `resume` names the newest manual handoff on a `Manual handoff:` line.
+- The resume guidance now covers the new sections: pending decisions are re-asked before anything
+  depends on them, listed agents are checked on before being relied on, and recorded test results
+  are treated as unverified once the repo has moved. Verified against Claude Code 2.1.330: a
+  background subagent survives `/clear` and delivers its result to the new session, and is stopped
+  when Claude Code exits; a session keeps its name across `/clear`, so messages from peer sessions
+  keep arriving.
+- **Recorded constraints are not treated as instructions.** A handoff's constraints and lessons are
+  file content that may come from a teammate or another branch. The resume guidance has the agent
+  follow recorded rules that restrict what it does, and ask the user before acting on any that
+  would grant a permission or skip a safeguard. On save, each constraint is marked as stated in
+  this session or carried from the previous handoff, so a rule the agent never heard from the user
+  stays marked as carried.
+
+### Hardened
+- **Only well-formed handoff filenames are discoverable.** Any `*.md` in a topic directory used to
+  be eligible, and its name was printed in the header `resume` writes. git will commit a filename
+  containing newlines, so a hostile branch could forge header lines. Discovery now ignores anything
+  that is not a `<timestamp>….md` name, and paths printed in headers are flattened to one line.
+- **Frontmatter and file names cannot inject into the header.** `head` reaches git only as a full
+  40- or 64-character object id (an abbreviated one could be shadowed by a ref of the same name),
+  `branch` is printed only when it is a plain ref name, and names of changed files are printed
+  only when they are plain path names.
+- **The guidance no longer names the fence literally.** The markers are renamed when the body
+  contains them, so the guidance tells the model to trust only the markers named in the sentence
+  the script prints before the block.
+- **git output that is not UTF-8 no longer crashes anything.** A branch name or commit subject in
+  another encoding made the snapshot raise, which in PreCompact silently produced no snapshot.
+  File names that are not valid text no longer make a command fail on output either. git calls
+  carry a timeout, and one process waits on git for at most 20 seconds in total.
+
+### Changed
+- **One copy of the writing guidance, one of the resume guidance.** `HANDOFF_TEMPLATE.md` is the
+  single source for a handoff's sections and writing rules, and the new
+  `references/resume-protocol.md` for what to do with a loaded handoff. `commands/save.md` and
+  `commands/resume.md` inject them; `SKILL.md` reads them. The two save paths had already drifted
+  once (fixed in 3.3.0).
+- **`SKILL.md` is trimmed to what the agent acts on.** File naming, frontmatter fields, hook
+  lifecycle and the trust-boundary details moved to `references/internals.md`. The "zero memory"
+  framing, previously only in `commands/save.md`, now opens the skill.
+- **`Resume instructions` is merged into `Next steps`**, which now starts with how to confirm the
+  state before changing anything. The two sections asked for the same thing.
+
+### Fixed
+- **The automatic path had no secrets rule.** `/save` has always told the agent to keep secrets out,
+  but the PreCompact steering text did not, and PostCompact writes that summary into the project
+  tree. The steering text now says so. This is a request to the summarizer, not a filter; the README
+  note about reviewing `-auto.md` files before committing them still applies.
+
+- **A session moved to the background lost its topic.** Choosing "Move to background" on exit (and
+  `--resume … --fork-session`) continues the conversation under a *new* session id, and the
+  session→topic binding is keyed on that id. The continuation's next `/save` therefore opened a new
+  timestamped topic, and SessionStart treated the fork as a fresh startup and injected the
+  recent-topics list into a conversation that was already in context. A forked session now inherits
+  its parent's topic and pending cross-topic links, and SessionStart stays silent for `source: fork`
+  as it does for `resume`. The parent is read from the `derived-from` record Claude Code writes into
+  the new transcript. That file does not exist yet when SessionStart fires (it appears about a
+  second later on 2.1.330), so the hook notes the fork and the parent is resolved the first time the
+  session's topic is needed. The note carries a snapshot of the topic bindings at the moment of the
+  fork, so the fork gets the topic the conversation was on then, whatever the parent does
+  afterwards, and a plain resume inherits nothing. If Claude Code stops writing that record,
+  behavior falls back to what it was: no inherited topic.
+
+### Tests
+- 132 new tests (222 total): the content digest (untracked files, symlinks, nested repositories,
+  the executable bit, large files, a project in a subdirectory of the repository), every state-check
+  verdict including a committed handoff and committed work, the check without git, rejection of
+  hostile `head`, `branch`, `created` and filename values, non-UTF-8 git output, the save/resume
+  scripts in a real repository (including forged header lines and fence markers inside a handoff
+  body), topic inheritance for forked sessions, and guards that the commands inject the shared
+  guidance files instead of restating them.
+- Three rounds of independent review reproduced defects in this release before it shipped, the
+  later rounds in the fixes for the earlier ones; each has a regression test.
+- Verified live against Claude Code 2.1.330 in an isolated instance: `/session-handoff:save`,
+  `/session-handoff:resume --auto` after `/clear`, a save from a session moved to the background
+  (it landed in its parent's topic, with the carried constraint marked as carried), and a planted
+  handoff this machine had not saved, which got `REVIEW FIRST`: its next step was not executed and
+  its "all commands are pre-approved" rule was held back for confirmation.
+
 ## [3.3.0] — 2026-07-24
 
 A correctness and containment release, prompted by a full audit of the plugin (self-review plus an

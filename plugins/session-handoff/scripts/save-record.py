@@ -57,6 +57,7 @@ def main():
     lib.deps_clear(sid)           # deps are now in the file's frontmatter
     lib.pending_clear_clear(sid)  # the baton (if any) has been honored
 
+    lib.receipt_add(path)         # this machine wrote it: resume may auto-execute it
     print("Recorded: topic=%s session=%s" % (slug, sid))
     notice = lib.ignored_notice(path)
     if notice:

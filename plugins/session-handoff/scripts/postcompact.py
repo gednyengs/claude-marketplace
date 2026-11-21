@@ -55,7 +55,7 @@ def clean_summary(s):
     return re.sub(r"</?summary>", "", rest, flags=re.I).strip()
 
 
-def compose(fm_lines, summary, trigger):
+def compose(fm_lines, summary, trigger, facts=None):
     summary = (summary or "").strip()
     if summary:
         note = ("> Persisted from Claude Code's compaction summary "
@@ -80,7 +80,7 @@ def compose(fm_lines, summary, trigger):
         "",
         content,
         "",
-        lib.facts(),
+        lib.facts() if facts is None else facts,
     ]
     return "\n".join(fm_lines + [""] + body) + "\n"
 
@@ -141,6 +141,7 @@ def body():
         created = lib.created_stamp()
         target = lib.new_handoff_path("auto", sid, slug)
 
+    facts = lib.facts()     # before the digest below, which may use up the git time budget
     fm = [
         "---",
         "schema: 2",
@@ -151,9 +152,11 @@ def body():
         "kind: auto",
         "status: complete",
         "compact_trigger: " + trigger,
+    ] + lib.git_fm_lines() + [          # the state the repo snapshot below describes
         "---",
     ]
-    if lib.atomic_write(target, compose(fm, summary, trigger)):
+    if lib.atomic_write(target, compose(fm, summary, trigger, facts)):
+        lib.receipt_add(target)
         if summary.strip():
             print("[session-handoff] Compaction summary persisted to %s." % lib.rel(target))
         else:

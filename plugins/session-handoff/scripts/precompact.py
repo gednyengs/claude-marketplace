@@ -14,6 +14,22 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib  # noqa: E402
 
+# Appended to the compaction summarizer's instructions. The summary this shapes is
+# persisted into the project tree by PostCompact, where it can be committed — so
+# the no-secrets rule that /save has always carried applies here too.
+STEERING = (
+    "When you write the compaction summary, in addition to anything the user asked you to focus "
+    "on above, ensure it preserves — where present — these handoff essentials so work can resume "
+    "cleanly in a fresh session: the exact in-flight step quoted verbatim (the edit or command "
+    "underway); standing constraints and instructions the user gave, in their own wording; key "
+    "decisions and the rationale behind them; questions put to the user that are still unanswered, "
+    "with the options offered; open questions and blockers; lessons learned from mistakes or "
+    "corrections; any subagents still running, replies still awaited from other agents, and "
+    "messages drafted but not yet sent, with what each is for; and the files/functions touched and "
+    "why. Never reproduce secrets, tokens, passwords, or credential values in the summary — refer "
+    "to them by name or location instead. Do not broaden the scope of an explicitly narrow user "
+    "request; within that scope, capture these where they apply.")
+
 
 def body():
     payload = sys.stdin.read()
@@ -59,6 +75,7 @@ def body():
                 "> completes; until then this is a repo-state safety record."]
 
     f = lib.new_handoff_path("auto", sid, slug)
+    facts = lib.facts()     # before the digest below, which may use up the git time budget
     content = "\n".join([
         "---",
         "schema: 2",
@@ -69,15 +86,17 @@ def body():
         "kind: auto",
         "status: " + status,
         "compact_trigger: " + trigger,
+    ] + lib.git_fm_lines() + [
         "---",
         "",
         "# Handoff — " + lib.iso(),
         "",
     ] + note + [
         "",
-        lib.facts(),
+        facts,
     ])
-    lib.atomic_write(f, content + "\n")
+    if lib.atomic_write(f, content + "\n") and status == "complete":
+        lib.receipt_add(f)          # a degraded snapshot is published finished
 
     # Stash the trigger so SessionStart(source=compact) can tell auto from manual.
     lib.compact_set(sid, trigger, lib.now_ms())
@@ -86,12 +105,7 @@ def body():
     # summarizer's instructions AFTER any /compact text the user supplied
     # (Claude Code concatenates them) — additive, never exclusive — so we phrase
     # it to defer to a deliberately narrow user request.
-    print("When you write the compaction summary, in addition to anything the user asked you to "
-          "focus on above, ensure it preserves — where present — these handoff essentials so work "
-          "can resume cleanly in a fresh session: the exact in-flight step quoted verbatim (the "
-          "edit or command underway); key decisions and the rationale behind them; open questions "
-          "and blockers; and the files/functions touched and why. Do not broaden the scope of an "
-          "explicitly narrow user request; within that scope, capture these where they apply.")
+    print(STEERING)
 
 if __name__ == "__main__":          # importable for tests; hooks run it as a script
     lib.run_hook(body)
