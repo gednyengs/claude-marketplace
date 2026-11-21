@@ -35,7 +35,8 @@ Pick it back up later, even in a brand-new session after `/clear`:
 /session-handoff:resume
 ```
 
-`resume` works out the right topic on its own, recaps the task, and asks how you want to proceed.
+`resume` works out the right topic on its own, checks whether the repository has moved since the
+handoff was written, recaps the task, and asks how you want to proceed.
 
 You don't have to type the commands. You can also trigger the same workflow by telling the agent
 what you want in plain language, for example "save a handoff" or "where did we leave off?". The
@@ -52,13 +53,51 @@ session doesn't have a topic yet (pass `--topic` to name a new topic). An option
 the agent as extra information to reflect in the handoff, for example a detail or fact to preserve, a
 constraint, or something to emphasize. It informs the content; it does not name the topic.
 
+When the topic already has a handoff, the new one replaces it as the topic's latest, so the agent is
+pointed at the previous file and told to carry forward whatever is still in force (constraints,
+decisions, dead ends, lessons, pending decisions) and drop what has been resolved.
+
 ### `/session-handoff:resume [--auto] [<id|topic>]`
 
 Load the right topic and get ready to continue. With no argument it finds the most relevant topic
 for your session, including one you just cleared out of. Pass an id or a topic slug to target a
-specific one. It checks that the saved repo snapshot still matches your working tree, recaps the
-task, and asks how to proceed. Add `--auto` to skip the recap and start executing the saved next
-steps right away.
+specific one. It recaps the task and asks how to proceed. Add `--auto` to start executing the saved
+next steps right away.
+
+A handoff describes the past, so `resume` checks it against the present before the agent relies on
+it. Ahead of the handoff it prints how long ago the file was saved and a **state check**:
+
+- `CLEAN`: same branch, and every tracked or untracked file has the content it had when the handoff
+  was saved. Committing your work or the handoff afterwards doesn't change this, because the check
+  compares file contents, not commit ids.
+- `DRIFT`: something moved. It lists the files that differ, a branch switch, and any file the
+  handoff names that no longer exists.
+- `UNVERIFIED`: the handoff could not be fully checked (it predates 3.4.0, or the project isn't a
+  git repository), so the agent checks by hand.
+
+The check covers the whole repository, including symlinks, submodules, and nested repositories. It
+does not look at files git ignores or at what is staged, and it leaves out handoff folders and
+Claude Code's agent worktrees. To stay fast it stops reading file contents after 32 MB of changes
+and compares the rest by size and modification time.
+
+Without git there is no commit to compare, so the check looks at the files the handoff names: a
+named file that was modified after the handoff was saved is `DRIFT`. Files the handoff doesn't
+name aren't checked, so the best result outside git is `UNVERIFIED`.
+
+`--auto` executes straight away only on `CLEAN`, and only for a handoff this machine saved. The
+plugin keeps a local record of the handoffs it writes; one that arrives from a teammate or another
+clone, or that was edited after it was saved, is somebody else's plan, so the agent recaps its next
+steps and asks first. The same applies to handoffs saved before 3.4.0, and to your own handoffs
+after you move or rename the project directory, since no record matches them. On `UNVERIFIED` the agent does the by-hand check and executes only if
+everything matches. On `DRIFT` it stops, reports what changed, and asks. Either way,
+the agent re-asks any decision the handoff says was waiting on you instead of assuming an answer,
+skips steps that depend on one, and checks on any agent or message the handoff lists as in flight
+before relying on it. (A background subagent keeps running across `/clear` and reports to the next
+session; it stops when Claude Code exits.)
+
+If the newest file in the topic is an automatic compaction snapshot and the topic also has a
+handoff you saved by hand, `resume` names that file too, so its dead ends and constraints aren't
+hidden behind the snapshot.
 
 ### `/session-handoff:load <id|topic>`
 
@@ -92,19 +131,37 @@ it does mean a note is not a free-text field.
 
 Each handoff records:
 
-- **Task & progress**: the goal, and what's done, in progress, and not started.
+- **Task & progress**: the goal, how to tell it's finished, and what's done, in progress, and not
+  started.
+- **Constraints & instructions from the user**: the standing rules you gave ("don't touch the
+  migrations", "use pnpm"), quoted where the wording matters, so a fresh session keeps to them.
+- **Decisions waiting on the user** (when relevant): questions you haven't answered yet, with the
+  options offered, the agent's recommendation, and which steps each one blocks.
 - **Key decisions & rationale**: so settled questions don't get reopened.
 - **Files & code touched**: the files and functions central to the work, and why each matters.
 - **Approaches tried & dead ends** (when relevant): attempts that failed or were abandoned, so the
   next session doesn't waste time repeating them.
-- **Open questions & blockers**: what's unresolved or waiting on input.
-- **Next steps**: an ordered checklist you can act on.
+- **Lessons learned** (when relevant): how to work on this from here on, learned from a mistake or
+  a correction. Lessons that would hold beyond the topic are flagged as candidates for `CLAUDE.md`.
+- **Agents & messages in flight** (when relevant): subagents still running with the brief each was
+  given and where its output lands, replies still awaited, and messages drafted but not yet sent.
+- **Open questions & blockers**: what's unresolved or waiting on something external.
+- **Next steps**: how to confirm the state before changing anything, then an ordered checklist. If
+  work stopped mid-step, the first item quotes exactly where.
 - **Environment, commands & results**: how to build, test, and run (auto-detected from
   `package.json`, `Makefile`, `pyproject.toml`, `Cargo.toml`, `go.mod`, Gradle, Maven, and more),
-  plus the commands you actually ran, meaningful results or measurements, and paths to any data
-  files or artifacts the next session needs.
+  plus the commands you actually ran and their results, each with the commit it ran against, and
+  paths to any data files or artifacts the next session needs.
 - **Repo snapshot**: branch, working-tree status, and recent commits.
-- **Resume instructions**: the first concrete actions to take when picking the work back up.
+
+The agent is also asked to say how it knows: a diagnosis or an in-progress item is marked as
+verified (with the command that showed it) or as an assumption. The handoff's frontmatter records
+the commit, branch, and a fingerprint of the file contents that differ from that commit, which is
+what `resume` compares against later.
+
+Recorded constraints are still file content, and a handoff can come from a teammate or another
+branch. On resume the agent follows recorded rules that restrict what it does, and asks you before
+acting on any that would grant it a permission or skip a safeguard.
 
 Handoffs you save by hand are plain Markdown meant to be committed with your repo, so they travel
 well for async work and team handoffs.
@@ -114,8 +171,10 @@ well for async work and team handoffs.
 The plugin protects your context without being asked:
 
 - **Before compaction**, it writes a safety snapshot with real git and environment facts, and steers
-  Claude Code's compaction summary toward what a handoff needs — the in-flight step, decisions and
-  their rationale, blockers, and the files touched.
+  Claude Code's compaction summary toward what a handoff needs — the in-flight step, your
+  constraints, decisions and their rationale, questions still waiting on you, blockers, lessons,
+  agents and messages in flight, and the files touched. It also tells the summarizer not to
+  reproduce secrets.
 - **After compaction**, it persists Claude Code's own summary into that snapshot as the durable
   handoff body, so even an unattended auto-compaction leaves behind a complete handoff that survives
   `/clear`. On automatic compaction it also nudges the session to continue its in-flight work.
@@ -130,7 +189,8 @@ The plugin protects your context without being asked:
   merge conflicts.
 - **No lost topic on a crash or restart.** The plugin's internal bookkeeping self-heals: a session
   that crashes before it can clean up is reclaimed automatically after a while, and resuming the
-  same session never forgets its topic.
+  same session never forgets its topic. A session you move to the background on exit keeps its
+  topic too, even though Claude Code gives it a new session id.
 - **Your files stay yours.** The plugin never edits your `.gitignore` or forces anything into git.
   It writes the files and lets your project decide what's tracked.
 - **Low overhead.** It only touches your context at the moments that matter (compaction, session
@@ -159,9 +219,10 @@ that ships with its own `.gitignore`, so it is never committed either way.
 
 **Review auto-snapshots before you commit them.** A handoff you write by hand is composed under an
 explicit instruction to keep secrets out. The `-auto.md` snapshots are different: their body is
-Claude Code's compaction summary of the whole conversation, persisted verbatim. If a token, key, or
-`.env` value was pasted into that conversation, it can land in the file — and committing it puts it
-in your history. If your work involves credentials, either read auto-snapshots before staging them
+Claude Code's compaction summary of the whole conversation, persisted verbatim. The plugin asks the
+summarizer to leave secrets out, but that is a request to a model, not a filter. If a token, key, or
+`.env` value was pasted into that conversation, it can still land in the file — and committing it
+puts it in your history. If your work involves credentials, either read auto-snapshots before staging them
 or ignore `*-auto.md` and rely on `/session-handoff:save` instead.
 
 ## Migrating from v1
@@ -199,7 +260,12 @@ python3 -m unittest discover -s plugins/session-handoff/tests
 
 It covers the compaction-summary parser (which is coupled to a Claude Code output format that can
 drift), path containment and the topic-slug grammar, the `/clear` baton protocol, the GC sweep,
-legacy migration, and an end-to-end run of the command scripts as the slash commands invoke them.
+legacy migration, the recorded repo state and the resume-time state check, and an end-to-end run of
+the command scripts as the slash commands invoke them.
+
+What a handoff contains is defined in one place, `skills/session-handoff/templates/HANDOFF_TEMPLATE.md`,
+and what to do with a loaded handoff in another, `skills/session-handoff/references/resume-protocol.md`.
+The slash commands inject those files and the skill reads them, so edit them there.
 
 ## Requirements
 

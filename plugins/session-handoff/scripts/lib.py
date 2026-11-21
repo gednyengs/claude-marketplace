@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -107,6 +108,7 @@ def init_context(project_dir_arg, plugin_data_arg=None, *, strict=True):
         return False
     _CTX["project_dir"] = pd
     _CTX["state_dir"] = _resolve_state_dir(plugin_data_arg, pd)
+    _GIT_DEADLINE[0] = None
     return True
 
 
@@ -114,6 +116,13 @@ def bootstrap(argv, *, strict):
     """Parse leading trusted flags and init the context. Returns (ok, rest)."""
     project, plugin_data, rest = split_leading_flags(argv)
     ok = init_context(project, plugin_data, strict=strict)
+    # Paths and titles can carry bytes that are not valid text in the terminal's
+    # encoding. Printing must never be what makes a command fail.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError, OSError):
+            pass
     return ok, rest
 
 
@@ -262,9 +271,14 @@ def session_id(payload=None):
     return sid
 
 
+def short_id(full):
+    """Filename-safe short form of a session id: up to 12 alphanumerics."""
+    return re.sub(r"[^a-zA-Z0-9]", "", full or "")[:12]
+
+
 def session_short(payload=None):
     """Filename-safe short id: up to 12 alphanumerics. THE identity key."""
-    return re.sub(r"[^a-zA-Z0-9]", "", session_id(payload))[:12]
+    return short_id(session_id(payload))
 
 
 def session_is_degraded(sid):
@@ -384,7 +398,7 @@ def session_topic_file(sid):
     return os.path.join(sessions_dir(), sid + ".topic")
 
 
-def session_topic_get(sid):
+def _topic_read(sid):
     try:
         with open(session_topic_file(sid)) as f:
             return f.read()
@@ -392,11 +406,205 @@ def session_topic_get(sid):
         return ""
 
 
+def session_topic_get(sid):
+    """The topic a session is bound to, or "". A forked session that has not
+    resolved its parent yet does so here, on first use (see "Forked sessions")."""
+    return _topic_read(sid) or _inherit_pending(sid)
+
+
 def session_topic_set(sid, topic):
     """Bind a session to a topic. Returns True on success — callers on a command
     path must report a failure rather than claim the save was recorded."""
     ensure_state()
     return atomic_write(session_topic_file(sid), topic)
+
+
+# --- Forked sessions --------------------------------------------------------
+#
+# Some operations continue a conversation under a NEW session id: choosing "Move
+# to background" when exiting, and `--resume ... --fork-session`. Everything here
+# is keyed on the session id, so without help the continuation would have no
+# topic and its next save would open a new one. Claude Code records the link in
+# the new session's transcript:
+#     {"type":"derived-from","sessionId":"<new>","sessions":[{"id":"<parent>","via":"fork"},...]}
+# This is a Claude Code format we do not control. If it changes, parent_sessions()
+# finds nothing and behavior falls back to what it was before: no inherited topic.
+#
+# Timing matters: when SessionStart fires for the fork, that transcript has not
+# been written yet (observed on 2.1.330 — the file appears about a second later).
+# So the hook only notes the fork (note_fork: when it happened, and where the
+# transcript will be), and the parent is resolved the first time anything asks
+# for the session's topic.
+#
+# What is inherited is the topic the conversation was on WHEN IT FORKED. The note
+# therefore carries a snapshot of every session's binding at that moment: once the
+# transcript names the parent, the answer is read from the snapshot, not from the
+# parent's state as it is by then. A parent that later switches topic, saves again,
+# or has its state swept changes nothing. Nothing is inherited on a later plain
+# resume, when no snapshot from the moment of the fork exists.
+
+_DERIVED_SCAN_BYTES = 2 * 1024 * 1024     # the record sits near the top of the file
+_INHERITED_STATE = (".deps", ".pending-clear")
+_FORK_VIA = ("fork", "resume")            # the derivations observed for a continued session
+_FORK_SLACK_S = 10                        # hook ordering and clock granularity around the fork
+_FORK_SETTLE_S = 60                       # how long Claude Code gets to write the transcript head
+_SNAPSHOT_MAX = 2000
+
+
+def parent_sessions(transcript_path, sid):
+    """Short ids of the sessions `sid` was derived from, nearest first, read from
+    the `derived-from` records in its transcript. [] when there are none. Reads a
+    bounded prefix of a regular file and nothing else."""
+    groups = []
+    try:
+        if not stat.S_ISREG(os.stat(transcript_path).st_mode):
+            return []
+        with open(transcript_path, "rb") as f:
+            budget = _DERIVED_SCAN_BYTES
+            while budget > 0:
+                raw = f.readline(budget)    # never more than the remaining budget
+                if not raw:
+                    break
+                budget -= len(raw)
+                if b'"derived-from"' not in raw:
+                    continue
+                try:
+                    rec = json.loads(raw.decode("utf-8", "replace"))
+                except ValueError:
+                    continue
+                if (isinstance(rec, dict) and rec.get("type") == "derived-from"
+                        and short_id(str(rec.get("sessionId", ""))) == sid):
+                    sessions = rec.get("sessions")
+                    groups.append([short_id(x["id"]) for x in (sessions if isinstance(sessions, list) else [])
+                                   if isinstance(x, dict) and isinstance(x.get("id"), str)
+                                   and x.get("via") in _FORK_VIA])
+    except OSError:
+        return []
+    out = []
+    for ids in reversed(groups):            # a later record is a nearer ancestor
+        for pid in ids:
+            if pid and pid != sid and pid != "nosession" and pid not in out:
+                out.append(pid)
+    return out
+
+
+def inherit_from_parent(sid, transcript_path, topics=None, forked_at=None):
+    """Give a forked session the topic binding (and pending links) of the session
+    it continues. Returns the inherited topic, or "" if there was nothing to
+    inherit. Never overwrites state the session already has.
+
+    `topics` is the {session: topic} snapshot taken when the fork happened; without
+    it the parents' current bindings are read. Ids from the transcript are reduced
+    to plain alphanumerics by short_id() before they are used as a key or in a
+    filename, and the topic is validated like any other."""
+    if not sid or session_is_degraded(sid) or not transcript_path:
+        return ""
+    if safe_slug(_topic_read(sid)):
+        return ""
+    for parent in parent_sessions(transcript_path, sid):
+        raw = _topic_read(parent) if topics is None else topics.get(parent, "")
+        topic = safe_slug(raw if isinstance(raw, str) else "")
+        if not topic:
+            continue
+        if not session_topic_set(sid, topic):
+            return ""
+        for suffix in _INHERITED_STATE:
+            src = os.path.join(sessions_dir(), parent + suffix)
+            dst = os.path.join(sessions_dir(), sid + suffix)
+            try:
+                if os.path.exists(dst) or not os.path.isfile(src):
+                    continue
+                if forked_at is not None and os.path.getmtime(src) > forked_at + _FORK_SLACK_S:
+                    continue                # recorded by the parent after the fork
+                with open(src, "rb") as f:
+                    atomic_write_bytes(dst, f.read())
+            except OSError:
+                pass
+        return topic
+    return ""
+
+
+def fork_note_file(sid):
+    return os.path.join(sessions_dir(), sid + ".transcript")
+
+
+def fork_pending(sid):
+    return bool(sid) and os.path.exists(fork_note_file(sid))
+
+
+def _topics_snapshot():
+    """{session: topic} for every bound session, right now. Forks that are still
+    waiting are resolved first so that a fork of a fork finds its parent bound."""
+    try:
+        for fn in sorted(n for n in os.listdir(sessions_dir()) if n.endswith(".transcript"))[:50]:
+            _inherit_pending(fn[:-len(".transcript")])
+        names = sorted(os.listdir(sessions_dir()))      # listed again: resolving creates bindings
+    except OSError:
+        return {}
+    def age(fn):
+        try:
+            return -os.path.getmtime(os.path.join(sessions_dir(), fn))
+        except OSError:
+            return 0.0
+    out = {}
+    for fn in sorted((n for n in names if n.endswith(".topic")), key=age):   # newest first
+        if len(out) >= _SNAPSHOT_MAX:
+            break
+        topic = safe_slug(_topic_read(fn[:-len(".topic")]))
+        if topic:
+            out[fn[:-len(".topic")]] = topic
+    return out
+
+
+def note_fork(sid, transcript_path, source):
+    """SessionStart entry point for a session whose conversation was restored.
+    Records a fork so its parent can be resolved once the transcript exists.
+
+    A fork is recognized by `source: fork`, or by a transcript that is not on disk
+    yet (a session that has run before always has one). A plain resume matches
+    neither, leaves no note, and inherits nothing — see the section comment."""
+    if not sid or session_is_degraded(sid) or not transcript_path or safe_slug(_topic_read(sid)):
+        return
+    if source != "fork" and os.path.exists(transcript_path):
+        return
+    if fork_pending(sid):
+        return                              # keep the original moment and snapshot
+    ensure_state()
+    atomic_write(fork_note_file(sid), json.dumps(
+        {"forked_at": int(time.time()), "transcript": transcript_path, "topics": _topics_snapshot()}))
+
+
+def _fork_note_read(sid):
+    """(forked_at, transcript_path, topics), or (0.0, "", {}) when there is no
+    usable note."""
+    try:
+        with open(fork_note_file(sid), encoding="utf-8") as f:
+            note = json.load(f)
+        topics = note.get("topics")
+        return (float(note["forked_at"]), str(note["transcript"]),
+                topics if isinstance(topics, dict) else {})
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
+        return 0.0, "", {}
+
+
+def _inherit_pending(sid):
+    """Resolve a noted fork on first use. The note is dropped once the question is
+    settled: a topic was inherited, or Claude Code has had ample time to write the
+    transcript head and it names no parent we can use. Until then it is kept, so a
+    lookup that lands while the file is still being written does not give up."""
+    forked_at, transcript_path, topics = _fork_note_read(sid)
+    if not transcript_path:
+        return ""
+    topic = inherit_from_parent(sid, transcript_path, topics, forked_at)
+    settled = bool(topic)
+    if not settled and time.time() - forked_at > _FORK_SETTLE_S:
+        try:
+            settled = os.path.getsize(transcript_path) > 0
+        except OSError:
+            settled = False                 # never written: the age sweep reclaims the note
+    if settled:
+        _unlink(fork_note_file(sid))
+    return topic
 
 
 def deps_file(sid):
@@ -574,6 +782,17 @@ _MANUAL_RE = re.compile(r"^" + TS_RE + r"(-[A-Za-z0-9]+)?\.md$")
 _STEM_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
+# What discovery will consider at all. A handoff's filename is printed in headers
+# the model treats as authoritative, and git will happily commit a name containing
+# newlines, so anything that is not a plain "<timestamp>….md" name is ignored
+# outright. (The tail is left open for names migrated from v1.)
+_HANDOFF_NAME_RE = re.compile(TS_RE + r"[A-Za-z0-9._-]{0,120}\.md")
+
+
+def is_handoff_name(name):
+    return bool(_HANDOFF_NAME_RE.fullmatch(name or ""))
+
+
 def is_auto(name):
     return bool(_AUTO_RE.match(name or ""))
 
@@ -694,7 +913,7 @@ def all_handoffs_bytime():
     files = []
     for dirpath, _dirs, filenames in os.walk(d):
         for fn in filenames:
-            if not fn.endswith(".md"):
+            if not is_handoff_name(fn):
                 continue
             p = os.path.join(dirpath, fn)
             if not _within_handoffs(p):
@@ -729,12 +948,29 @@ def latest_ready_in_topic(slug):
     d = topic_dir(slug)
     if not os.path.isdir(d):
         return ""
-    for fn in sorted((fn for fn in os.listdir(d) if fn.endswith(".md")), reverse=True):
+    for fn in sorted((fn for fn in os.listdir(d) if is_handoff_name(fn)), reverse=True):
         p = os.path.join(d, fn)
         if not _within_handoffs(p):
             continue
         if not is_pending(p):
             return p
+    return ""
+
+
+def latest_manual_in_topic(slug):
+    """Latest hand-written (non-auto) handoff in a topic, or ''. Resume loads the
+    newest file of any kind, so after a compaction this is how the handoff a
+    session wrote by hand — with its dead ends and constraints — stays reachable."""
+    if not valid_slug(slug):
+        return ""
+    d = topic_dir(slug)
+    if not os.path.isdir(d):
+        return ""
+    for fn in sorted((fn for fn in os.listdir(d) if is_handoff_name(fn)), reverse=True):
+        p = os.path.join(d, fn)
+        if is_auto(fn) or not _within_handoffs(p) or is_pending(p):
+            continue
+        return p
     return ""
 
 
@@ -748,7 +984,7 @@ def recent_topics(limit=5):
     rows = []
     for dirpath, _dirs, filenames in os.walk(d):
         for fn in filenames:
-            if not fn.endswith(".md"):
+            if not is_handoff_name(fn):
                 continue
             p = os.path.join(dirpath, fn)
             if not _within_handoffs(p):          # symlink out of the tree
@@ -799,11 +1035,13 @@ def resolve_id(q):
             return ""
         for cand in (os.path.join(d, topic, stem + ".md"),
                      os.path.join(d, topic, stem + "-auto.md")):
-            if os.path.isfile(cand) and _within_handoffs(cand) and not is_pending(cand):
+            if (is_handoff_name(os.path.basename(cand)) and os.path.isfile(cand)
+                    and _within_handoffs(cand) and not is_pending(cand)):
                 return cand
         pattern = os.path.join(d, glob.escape(topic), glob.escape(stem) + "*.md")
         matches = sorted(g for g in glob.glob(pattern)
-                         if _within_handoffs(g) and not is_pending(g))
+                         if is_handoff_name(os.path.basename(g))
+                         and _within_handoffs(g) and not is_pending(g))
         return matches[0] if len(matches) == 1 else ""
     if not valid_slug(q):
         return ""
@@ -920,8 +1158,11 @@ def unique_topic_slug(text):
 
 def git(*args):
     try:
-        r = subprocess.run(["git", "-C", project_dir(), *args],
-                           capture_output=True, text=True)
+        left = _git_left()
+        if left <= 0:
+            return ""
+        r = subprocess.run(["git", "-C", project_dir(), *args], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=min(left, 20))
     except (OSError, subprocess.SubprocessError):
         return ""
     return r.stdout if r.returncode == 0 else ""
@@ -929,8 +1170,9 @@ def git(*args):
 
 def in_git():
     try:
-        r = subprocess.run(["git", "-C", project_dir(), "rev-parse",
-                            "--is-inside-work-tree"], capture_output=True, text=True)
+        r = subprocess.run(["git", "-C", project_dir(), "rev-parse", "--is-inside-work-tree"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=max(0.1, min(_git_left(), 20)))
     except (OSError, subprocess.SubprocessError):
         return False
     return r.returncode == 0 and r.stdout.strip() == "true"
@@ -1009,6 +1251,9 @@ def facts():
         if lg:
             out.append(lg)
         out.append("```")
+        if _git_left() <= 0:
+            out.append("- _git did not answer within the time limit, so this snapshot may be "
+                       "incomplete. Run `git status` and `git log` to see the real state._")
     else:
         out.append("- _Not a git repository._")
     out.append("")
@@ -1016,6 +1261,605 @@ def facts():
     out.append("")
     out.append(detect_commands())
     return "\n".join(out)
+
+
+# --- Recorded repo state, age, and drift ------------------------------------
+#
+# A handoff is a set of claims made at one moment. new-path.py and the compaction
+# hooks record where the repo stood at that moment (frontmatter `head`, `branch`,
+# `tree_state`), and resume.py compares it with the present, so "is this still
+# true?" is answered by a script instead of being left to the model's judgment.
+#
+# The comparison is about FILE CONTENT, not about commits. `tree_state` digests
+# every path whose working-tree content differs from the recorded commit, plus
+# every untracked file. On resume the same digest is computed against that SAME
+# recorded commit, so it comes out equal exactly when every file is as it was —
+# even if the saved work has since been committed, or the handoff itself was
+# (a file cannot record the hash of the commit that contains it, so comparing
+# commit ids would report every committed handoff as drifted).
+#
+# Not compared, by design: ignored files, and what is staged versus unstaged.
+
+# A full object id only. An abbreviated one could be shadowed by a ref of the same
+# name (git resolves refs before short ids); a full id is always read as an id.
+_SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+# Never part of the comparison, wherever in the repository they sit: handoff trees
+# (this project's, and those of other projects in the same repository — writing a
+# handoff must not read as a change to anyone), and Claude Code's agent worktrees,
+# which are separate checkouts that come and go.
+# Tracked files that merely live under one of these names are still compared: the
+# handoff exclusion is limited to the plugin's own subdirectories, and the worktree
+# exclusion applies to untracked entries only.
+_HANDOFF_EXCLUDES = (":(exclude,glob)**/.claude/sekekama/session-handoff/handoffs/**",
+                     ":(exclude,glob)**/.claude/sekekama/session-handoff/.state/**")
+_UNTRACKED_EXCLUDES = _HANDOFF_EXCLUDES + (":(exclude,glob)**/.claude/worktrees/**",)
+_HASH_BUDGET = 32 * 1024 * 1024       # bytes of changed-file content read per digest
+_WALK_FILES = 20000                   # files read inside untracked nested directories
+_NEST_DEPTH = 3                       # how far to follow submodules inside submodules
+_GIT_BUDGET_S = 20.0                  # total seconds one process may wait on git
+_GIT_DEADLINE = [None]
+# File names are repository content on their way into a script-authored header.
+# Only plain ones are shown; the rest are counted.
+_NAME_SHOW_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._/@+-]{0,199}")
+# Branch names are echoed into a script-authored header, and the recorded one
+# comes from a committed file. Only a conservative, punctuation-poor name is shown.
+_REF_SHOW_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/@+-]{0,199}")
+
+
+def _git_left():
+    """Seconds this process may still spend waiting on git. One budget for the
+    whole process, so a slow or hung git cannot stall a hook for a multiple of
+    the per-call timeout."""
+    if _GIT_DEADLINE[0] is None:
+        _GIT_DEADLINE[0] = time.monotonic() + _GIT_BUDGET_S
+    return _GIT_DEADLINE[0] - time.monotonic()
+
+
+def _git_run(*args, cwd=None):
+    """Run git (in the project dir unless `cwd` is given). Returns (returncode,
+    stdout bytes), or (-1, b"") when git could not be run, did not finish in time,
+    or the process has used up its git budget. Bytes, not text: paths, branch
+    names and commit subjects need not be UTF-8."""
+    left = _git_left()
+    if left <= 0:
+        return -1, b""
+    try:
+        r = subprocess.run(["git", "-C", cwd or project_dir(), *args],
+                           capture_output=True, timeout=min(left, 20))
+    except (OSError, subprocess.SubprocessError):
+        return -1, b""
+    return r.returncode, r.stdout
+
+
+def _git_text(*args):
+    rc, out = _git_run(*args)
+    return out.decode("utf-8", "replace") if rc == 0 else ""
+
+
+def _norm_branch(name):
+    """A branch name as it survives a round trip through our frontmatter reader."""
+    return sanitize_line(name).strip('"')
+
+
+def _show_ref(name):
+    """A branch name fit to print in the header, or a placeholder."""
+    return "`%s`" % name if _REF_SHOW_RE.fullmatch(name or "") else "(name not shown)"
+
+
+def _toplevel(cwd=None):
+    rc, top = _git_run("rev-parse", "--show-toplevel", cwd=cwd)
+    return os.fsdecode(top.rstrip(b"\r\n")) if rc == 0 and top.strip() else ""
+
+
+def _changed_paths(base, top):
+    """(tracked, untracked): repo-relative byte paths whose working-tree content
+    differs from commit `base`, and untracked files. None when undeterminable.
+
+    Both commands run AT THE TOP of the repository with `.` as the pathspec, so
+    they cover all of it and report paths relative to the same directory. (Run
+    from a subdirectory, `ls-files --others` reports relative to that directory
+    while `diff` reports relative to the top.)"""
+    rc, diff = _git_run("diff", "--name-only", "-z", "--no-renames", "--ignore-submodules=none",
+                        base, "--", ".", *_HANDOFF_EXCLUDES, cwd=top)
+    if rc != 0:
+        return None
+    rc, others = _git_run("ls-files", "--others", "--exclude-standard", "--full-name", "-z",
+                          "--", ".", *_UNTRACKED_EXCLUDES, cwd=top)
+    if rc != 0:
+        return None
+    return (sorted(set(t for t in diff.split(b"\0") if t)),
+            sorted(set(t for t in others.split(b"\0") if t)))
+
+
+def _file_digest(p, budget):
+    """One non-directory path (bytes): what kind of thing it is, and its content."""
+    try:
+        info = os.lstat(p)
+    except OSError:
+        return b"gone"
+    if stat.S_ISLNK(info.st_mode):
+        try:
+            return b"link:" + os.fsencode(os.readlink(p))
+        except OSError:
+            return b"link?"
+    if not stat.S_ISREG(info.st_mode):
+        return b"special"
+    if info.st_size > budget[0]:            # too much to read: fall back to size + mtime
+        return ("big:%d:%d" % (info.st_size, info.st_mtime_ns)).encode()
+    try:
+        with open(p, "rb") as f:
+            data = f.read()
+    except OSError:
+        return b"unreadable"
+    budget[0] -= len(data)
+    return b"file:%d:" % (1 if info.st_mode & 0o111 else 0) + hashlib.sha1(data).digest()
+
+
+def _walk_digest(root, budget):
+    """A directory git reports as a single untracked entry — in practice a nested
+    repository that is not a submodule. Its files are read directly: git is NOT
+    run inside it, because doing so would execute whatever that repository's own
+    config says (an fsmonitor hook, a filter), and nothing vouches for a nested
+    repository the way the user's own `git status` vouches for a submodule.
+    Returns None when the tree is too large to read within the file budget."""
+    h = hashlib.sha1()
+    for dirpath, dirs, files in os.walk(root):
+        keep = []
+        for d in sorted(dirs):
+            full = os.path.join(dirpath, d)
+            if os.path.islink(full):
+                h.update(b"\0" + os.path.relpath(full, root) + b"\0" + _file_digest(full, budget))
+            elif d != b".git":
+                keep.append(d)
+        dirs[:] = keep
+        for fn in sorted(files):
+            if fn == b".git":
+                continue
+            budget[1] -= 1
+            if budget[1] < 0:
+                return None
+            full = os.path.join(dirpath, fn)
+            h.update(b"\0" + os.path.relpath(full, root) + b"\0" + _file_digest(full, budget))
+    return h.digest()
+
+
+def _is_gitlink(top, relp):
+    """True when the index records `relp` as a submodule (mode 160000). A directory
+    that merely appears in the diff — a tracked file replaced by a directory, say —
+    is not one, and git must not be run inside it."""
+    rc, out = _git_run("ls-files", "--stage", "-z", "--", ":(literal)" + os.fsdecode(relp), cwd=top)
+    return rc == 0 and out.startswith(b"160000 ")
+
+
+def _submodule_digest(p, depth, budget):
+    """A tracked submodule: its checked-out commit plus the digest of its own
+    changes. git already runs inside a submodule whenever the user runs `git
+    status` in the superproject, so doing the same here is no new exposure."""
+    sub = os.fsdecode(p)
+    rc, head = _git_run("rev-parse", "--verify", "--quiet", "HEAD^{commit}", cwd=sub)
+    head = head.strip() if rc == 0 else b""
+    if not head or _toplevel(sub) != os.path.realpath(sub):
+        return _walk_digest(p, budget)      # not initialized: just a directory
+    if depth <= 0:
+        return None
+    inner = _content_digest(head.decode("ascii", "replace"), depth - 1, budget, sub)
+    return None if inner is None else head + b":" + inner
+
+
+def _content_digest(base, depth, budget, top, found=None):
+    """Digest of how the working tree of the repository at `top` differs from
+    commit `base`: b"" when it does not, None when it cannot be determined.
+    `budget` is [bytes left to read, files left to walk], shared across nesting.
+    `found` is a _changed_paths() result the caller already has."""
+    if found is None:
+        found = _changed_paths(base, top)
+    if found is None:
+        return None
+    tracked, untracked = found
+    paths = sorted(set(tracked) | set(untracked))
+    if not paths:
+        return b""
+    top_b, loose = os.fsencode(top), set(untracked)
+    h = hashlib.sha1()
+    for relp in paths:
+        p = os.path.join(top_b, relp)
+        if os.path.isdir(p) and not os.path.islink(p):
+            part = (_submodule_digest(p, depth, budget) if relp not in loose and _is_gitlink(top, relp)
+                    else _walk_digest(p, budget))
+            if part is None:
+                return None
+            part = b"dir:" + part
+        else:
+            part = _file_digest(p, budget)
+        h.update(b"\0" + relp + b"\0" + part)
+    return h.digest()
+
+
+def tree_state(base="HEAD"):
+    """How the working tree differs from commit `base`: "clean", "dirty-<16 hex>",
+    or "" when it cannot be determined. See the section comment for why the base
+    is a parameter: resume passes the commit the handoff recorded."""
+    return tree_state_names(base)[0]
+
+
+def tree_state_names(base="HEAD"):
+    """(tree_state, names of the paths that differ from `base`), from one pass."""
+    top = _toplevel()
+    found = _changed_paths(base, top) if top else None
+    if found is None:
+        return "", []
+    d = _content_digest(base, _NEST_DEPTH, [_HASH_BUDGET, _WALK_FILES], top, found)
+    if d is None:
+        return "", []
+    names = sorted(t.decode("utf-8", "replace") for t in set(found[0]) | set(found[1]))
+    return ("dirty-" + d.hex()[:16] if d else "clean"), names
+
+
+def _head():
+    rc, out = _git_run("rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+    head = out.decode("ascii", "replace").strip() if rc == 0 else ""
+    return head if _SHA_RE.fullmatch(head) else ""
+
+
+def git_state():
+    """(head, branch, tree_state) of the project right now, or ("", "", "") when
+    it is not a git repository or has no commit yet."""
+    head = _head()
+    if not head:
+        return "", "", ""
+    return head, _norm_branch(_git_text("rev-parse", "--abbrev-ref", "HEAD").strip()), tree_state(head)
+
+
+def git_fm_lines():
+    """Frontmatter lines recording the repo state a handoff was written against."""
+    head, branch, tree = git_state()
+    if not head:
+        return []
+    out = ["head: " + head]
+    if branch:
+        out.append("branch: " + branch)
+    if tree:
+        out.append("tree_state: " + tree)
+    return out
+
+
+def _rev_count(a, b):
+    rc, out = _git_run("rev-list", "--count", "%s..%s" % (a, b))
+    try:
+        return int(out.strip()) if rc == 0 else 0
+    except ValueError:
+        return 0
+
+
+def _head_moved(saved, head):
+    """Lines describing how HEAD relates to the recorded commit (which exists)."""
+    s, h = saved[:10], head[:10]
+    if _git_run("merge-base", "--is-ancestor", saved, head)[0] == 0:
+        n = _rev_count(saved, head)
+        out = ["- HEAD: %d commit(s) since the handoff (%s..%s):" % (n, s, h)]
+        # Commit subjects are repo content on their way into model context. The -c
+        # and --no-decorate keep user config from adding lines of its own.
+        log = _git_text("-c", "log.showSignature=false", "log", "--oneline", "--no-decorate",
+                        "-10", "%s..%s" % (saved, head))
+        for ln in log.splitlines():
+            out.append("    " + sanitize_line(ln, 120))
+        if n > 10:
+            out.append("    ... and %d more" % (n - 10))
+        return out
+    if _git_run("merge-base", "--is-ancestor", head, saved)[0] == 0:
+        return ["- HEAD: now at %s, %d commit(s) BEHIND the recorded commit %s (a reset, or a "
+                "different branch)." % (h, _rev_count(head, saved), s)]
+    return ["- HEAD: now at %s. History has diverged from the recorded commit %s (a rebase, a "
+            "reset, or a different branch)." % (h, s)]
+
+
+_FILES_HEADING = re.compile(r"^##[ \t]+Files & code touched[ \t]*$")
+_BULLET_PATH = re.compile(r"^[ \t]*[-*+][ \t]+`([^`]+)`")
+_NOT_A_PATH = set(" \t*?<>()[]{}|$\\\"'")
+
+
+def listed_files(path):
+    """Project files named under "## Files & code touched", as (shown, absolute)
+    pairs. Only the leading `backticked` token of each bullet is read, and only
+    when it looks like a project-relative file path — a function name or a glob is
+    skipped. The handoff is untrusted, so a path that leaves the project directory
+    is dropped here and never probed."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().split("\n")
+    except OSError:
+        return []
+    base = os.path.normpath(project_dir())
+    out, seen, insec = [], set(), False
+    for ln in lines:
+        if _FILES_HEADING.match(ln):
+            insec = True
+            continue
+        if insec and re.match(r"^##[ \t]", ln):
+            break
+        m = _BULLET_PATH.match(ln) if insec else None
+        if not m:
+            continue
+        cand = m.group(1).strip()
+        cand = re.sub(r"(::.*|#L[0-9].*|:[0-9]+(-[0-9]+)?)$", "", cand)
+        if (not cand or cand in seen or cand[0] in "-~" or "://" in cand
+                or _NOT_A_PATH & set(cand) or _CTRL_RE.search(cand)):
+            continue
+        if "/" not in cand and not re.search(r"\.[A-Za-z0-9]{1,8}$", cand):
+            continue                        # a bare word: more likely a symbol than a file
+        seen.add(cand)
+        p = os.path.normpath(os.path.join(base, cand))
+        if p != base and not p.startswith(base + os.sep):
+            continue
+        out.append((cand, p))
+    return out
+
+
+def _names(names, limit=8):
+    """Path names for a header line. Only plain names are printed — a file can be
+    called anything, including a sentence addressed to the reader — and the rest
+    are counted."""
+    plain = [n for n in names if _NAME_SHOW_RE.fullmatch(n)]
+    shown = ", ".join("`%s`" % n for n in plain[:limit])
+    extra = []
+    if len(plain) > limit:
+        extra.append("%d more" % (len(plain) - limit))
+    if len(names) > len(plain):
+        extra.append("%d with a name that is not shown" % (len(names) - len(plain)))
+    if not extra:
+        return shown
+    return (shown + " " if shown else "") + "(%s%s)" % ("and " if shown else "", ", ".join(extra))
+
+
+def missing_files(path, limit=8):
+    """Listed files that no longer exist, as (shown, total)."""
+    gone = [c for c, p in listed_files(path) if not os.path.lexists(p)]
+    return gone[:limit], len(gone)
+
+
+def _saved_epoch(path, fm):
+    """Best estimate of when a handoff was written, as seconds since the epoch: the
+    earlier of its `created` field and the file's own mtime. Taking the earlier one
+    means a forged or future `created` can only make more files look changed."""
+    cands = []
+    dt = _created_dt(path, fm)
+    if dt is not None:
+        try:
+            cands.append(dt.timestamp())
+        except (OverflowError, OSError, ValueError):
+            pass
+    try:
+        cands.append(os.path.getmtime(path))
+    except OSError:
+        pass
+    return min(cands) if cands else None
+
+
+def _check_without_git(path, fm):
+    """No commit to compare against, so look at the only thing the handoff pins
+    down: the files it names. Modification times are meaningful here because
+    nothing has been checked out or cloned over them."""
+    lines = ["- Not a git repository, so there is no commit or working tree to compare."]
+    listed = listed_files(path)
+    saved = _saved_epoch(path, fm)
+    gone = [c for c, p in listed if not os.path.lexists(p)]
+    newer = []
+    if saved is not None:
+        for c, p in listed:
+            try:
+                if os.path.getmtime(p) > saved + 2:
+                    newer.append(c)
+            except OSError:
+                pass
+    if newer:
+        lines.append("- Files: %d file(s) this handoff names were modified after it was saved: %s."
+                     % (len(newer), _names(newer)))
+    if gone:
+        lines.append("- Files: %d path(s) this handoff names do not exist now: %s. Expected if the "
+                     "handoff says they were removed or renamed." % (len(gone), _names(gone)))
+    if not listed:
+        lines.append("- This handoff names no files to check. Look over the project by hand before "
+                     "relying on it.")
+    elif not newer and not gone:
+        lines.append("- Files: the %d file(s) this handoff names exist and have not been modified "
+                     "since it was saved. Files it does not name were not checked, so look over the "
+                     "project by hand before relying on it." % len(listed))
+    else:
+        lines.append("- Check by hand that the files this handoff names look as it describes.")
+    return ("DRIFT" if newer else "UNVERIFIED"), lines
+
+
+def state_check(path, fm=None):
+    """Compare the state a handoff recorded with the present.
+
+    Returns (verdict, detail_lines):
+      CLEAN       same branch, and every file has the content it had at save time
+      DRIFT       something moved; the detail lines say what
+      UNVERIFIED  nothing reliable to compare against (no git, or a handoff that
+                  records no commit) — the caller checks by hand
+
+    Frontmatter comes from a committed file, so it is untrusted: `head` reaches git
+    only as a full hexadecimal object id, `tree_state` is compared and never
+    echoed, and `branch` is echoed only when it is a plain ref name."""
+    fm = fm_all(path) if fm is None else fm
+    if not in_git():
+        return _check_without_git(path, fm)
+    saved_head = fm.get("head", "")
+    if not _SHA_RE.fullmatch(saved_head):
+        saved_head = ""
+    lines, drift, verified = [], False, False
+    head = _head()
+    if not saved_head:
+        lines.append("- This handoff does not record the commit it was written at (an older plugin "
+                     "version, or a repository with no commits). Compare its Repo snapshot section "
+                     "with `git status`, the current branch and `git log` by hand.")
+    elif not head:
+        drift = True
+        lines.append("- HEAD: the repository has no commit now, but the handoff was saved at %s."
+                     % saved_head[:10])
+    elif _git_run("cat-file", "-e", saved_head + "^{commit}")[0] != 0:
+        drift = True
+        lines.append("- HEAD: now at %s. The recorded commit %s is not in this repository (a "
+                     "different clone, a shallow clone, or rewritten history), so file contents "
+                     "cannot be compared." % (head[:10], saved_head[:10]))
+    else:
+        verified = True
+        saved_branch = _norm_branch(fm.get("branch", ""))
+        branch = _norm_branch(_git_text("rev-parse", "--abbrev-ref", "HEAD").strip())
+        if saved_branch and branch and saved_branch != branch:
+            drift = True
+            lines.append("- Branch: saved on %s, now on %s." % (_show_ref(saved_branch), _show_ref(branch)))
+        if head != saved_head:
+            lines.extend(_head_moved(saved_head, head))
+        saved_tree = fm.get("tree_state", "")
+        tree, now = tree_state_names(saved_head)    # measured against the RECORDED commit
+        if not saved_tree or not tree:
+            verified = False
+            lines.append("- Files: file contents could not be compared with save time. Check "
+                         "`git status` and `git diff` by hand.")
+        elif saved_tree != tree:
+            drift = True
+            if saved_tree == "clean":
+                lines.append("- Files: the working tree matched commit %s at save time; %d path(s) "
+                             "differ from it now: %s." % (saved_head[:10], len(now), _names(now)))
+            elif tree == "clean":
+                lines.append("- Files: there was uncommitted work at save time, and the working tree "
+                             "now matches commit %s exactly, so that work is gone from the files "
+                             "(discarded or stashed)." % saved_head[:10])
+            else:
+                lines.append("- Files: the content that differs from commit %s is not what it was "
+                             "at save time (%d path(s) differ from that commit now)."
+                             % (saved_head[:10], len(now)))
+        elif head != saved_head:
+            lines.append("- Files: every file has the content it had at save time; the commits "
+                         "above did not change what is on disk.")
+    verdict = "DRIFT" if drift else ("CLEAN" if verified else "UNVERIFIED")
+    if verdict != "CLEAN":
+        # With unchanged content, a missing path was already missing when the
+        # handoff was written, so it is only worth reporting once something moved.
+        shown, total = missing_files(path)
+        if shown:
+            more = " (and %d more)" % (total - len(shown)) if total > len(shown) else ""
+            lines.append("- Files: %d path(s) listed under \"Files & code touched\" do not exist now%s: %s. "
+                         "Expected if the handoff says they were removed or renamed."
+                         % (total, more, _names(shown)))
+    return verdict, lines
+
+
+def _ago(seconds):
+    if seconds < -300:
+        return "dated in the future, so its age is unknown"
+    if seconds < 90:
+        return "just now"
+    if seconds < 90 * 60:
+        return "%d minutes ago" % round(seconds / 60)
+    if seconds < 36 * 3600:
+        return "%d hours ago" % round(seconds / 3600)
+    return "%d days ago" % round(seconds / 86400)
+
+
+def _created_dt(path, fm):
+    """When a handoff says it was written: frontmatter `created`, else the
+    filename's timestamp (local time). None when neither parses."""
+    dt = None
+    for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            dt = datetime.strptime(fm.get("created", ""), fmt)
+            break
+        except ValueError:
+            pass
+    if dt is None:
+        m = re.match(TS_RE, os.path.basename(path))
+        if m:
+            try:
+                dt = datetime.strptime(m.group(0), "%Y-%m-%d-%H%M%S")
+            except ValueError:
+                dt = None
+    if dt is None:
+        return None
+    try:
+        return dt.astimezone()              # naive values are taken as local time
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def handoff_saved(path, fm=None):
+    """When a handoff was written, as ("YYYY-MM-DD HH:MM", "N days ago"), or
+    ("", "") when unknown. The date is the handoff's own claim; a value in the
+    future is reported as such instead of being shown as fresh."""
+    fm = fm_all(path) if fm is None else fm
+    dt = _created_dt(path, fm)
+    if dt is None:
+        return "", ""
+    try:
+        secs = (datetime.now().astimezone() - dt).total_seconds()
+        return dt.strftime("%Y-%m-%d %H:%M"), _ago(secs)
+    except (OverflowError, OSError, ValueError):
+        return "", ""
+
+
+def show_path(path, absolute=False):
+    """A path fit to print in a script-authored header: one bounded line. Handoff
+    paths are built from validated slugs and names, so this is a second line of
+    defence, not the first."""
+    return sanitize_line(path if absolute else rel(path), 600)
+
+
+# --- Provenance ---------------------------------------------------------------
+#
+# The state check says whether a handoff is STALE. It says nothing about who wrote
+# it: a handoff that arrives through a clone can carry whatever frontmatter earns
+# a CLEAN verdict. So the plugin also keeps a receipt, outside the repository, of
+# every handoff it wrote on this machine (a hash of the file as written). Only a
+# handoff with a matching receipt may be auto-executed; anything else — a
+# teammate's, another clone's, or one edited after it was saved — is reviewed with
+# the user first.
+
+def _receipts_file():
+    return os.path.join(state_dir(), "receipts", cwd_hash() + ".sha256")
+
+
+def _state_is_private():
+    """Receipts mean something only when the state dir is outside the project: the
+    in-repo fallback could be populated by whoever authored the branch."""
+    return not os.path.normpath(state_dir()).endswith(_INREPO_STATE_SUFFIX)
+
+
+def _file_sha256(path):
+    """Hash of a handoff's content, insensitive to the two byte-level changes
+    tooling makes without anyone editing the file: line-ending conversion (git
+    autocrlf) and trailing newlines (an end-of-file fixer)."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return ""
+    return hashlib.sha256(data.replace(b"\r\n", b"\n").rstrip(b"\n")).hexdigest()
+
+
+def receipt_add(path):
+    """Record that this machine wrote the handoff at `path`, as it is right now."""
+    digest = _file_sha256(path)
+    if not digest or not _state_is_private():
+        return
+    try:
+        os.makedirs(os.path.dirname(_receipts_file()), exist_ok=True)
+        with open(_receipts_file(), "a") as f:
+            f.write(digest + "\n")
+    except OSError:
+        pass
+
+
+def saved_here(path):
+    """True when this machine wrote this exact handoff content."""
+    digest = _file_sha256(path)
+    if not digest or not _state_is_private():
+        return False
+    try:
+        with open(_receipts_file()) as f:
+            return digest in f.read().split()
+    except OSError:
+        return False
 
 
 def rel(path):

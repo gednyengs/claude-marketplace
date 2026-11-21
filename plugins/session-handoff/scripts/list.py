@@ -64,7 +64,8 @@ def main():
     # --- Current-topic view ---
     d = lib.topic_dir(cur)          # `cur` is already laundered through safe_slug
     files = ([f for f in sorted(glob.glob(os.path.join(d, "*.md")), reverse=True)
-              if lib._within_handoffs(f) and not lib.is_pending(f)][:max_n]
+              if lib.is_handoff_name(os.path.basename(f))
+              and lib._within_handoffs(f) and not lib.is_pending(f)][:max_n]
              if os.path.isdir(d) else [])
     if not files:
         print("_No handoffs yet in the current topic '%s'. Run /session-handoff:list --any to see other topics._" % cur)
