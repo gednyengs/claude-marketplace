@@ -3,6 +3,107 @@
 All notable changes to this plugin are documented here. This project follows
 [semantic versioning](https://semver.org).
 
+## [4.0.0] — 2026-11-21
+
+The plugin's lifecycle moves from command hooks to a Claude Code **hooks module**. No change to the
+commands or to the handoff file format; existing handoffs keep working.
+
+**Breaking: requires Claude Code 2.1.330 or newer.** Older versions are not supported, and
+`plugin.json` says so (`engines`). The last release that runs on command hooks is 3.4.0. Claude
+Code's module API is early access and may change between releases; see "If the module is not
+running" below.
+
+### Changed — how the lifecycle runs
+- **One module instead of four command hooks.** `hooks/register.ts` stays loaded for the life of
+  the process and calls the Python scripts, which still hold every path, topic and file-format
+  rule. One command hook remains: PreCompact, which now only prints the text that steers the
+  compaction summary. Steering stays a command hook because Claude Code discards a summary it
+  computed ahead of time when a module rewrites the instructions of the compaction that installs
+  it; text from a PreCompact hook does not have that effect. This follows from reading Claude Code
+  2.1.330 and was not exercised live with a precomputed summary.
+- **`/clear` hands the topic over by session id.** The module is not reloaded by a `/clear` and
+  sees both the session that ended and the one that began, so `session-start.py` is told which
+  session was cleared. Before, two separate hook processes passed the topic through a file keyed on
+  the working directory, and two sessions clearing in the same directory within two minutes could
+  only be reported as ambiguous. That case now works, and the "multiple recent clears" message is
+  gone.
+- **A compaction snapshot is written once, complete.** One module hook wraps the whole compaction
+  and saves the summary on the way out. Before, PreCompact wrote a
+  `status: pending` skeleton and PostCompact found it again by recency and filled it in. An aborted
+  compaction can no longer leave a hidden pending file behind.
+- "Summarize from here", "Summarize up to here" and one of Claude Code's automatic paths do not go
+  through the compaction the module wraps. Their summary is saved from Claude Code's PostCompact
+  event, as 3.4.0 did. Read from Claude Code 2.1.330; not exercised live.
+- **A compaction with no usable summary writes nothing** and says so in the transcript. Before, the
+  announced skeleton had to be completed with a "summary unavailable" body, which then became the
+  topic's newest handoff.
+- After a compaction the model is no longer told where the snapshot is, since it is written after
+  the model is told the compaction happened. The location is shown in the transcript instead.
+  After an automatic compaction the model is still told to continue its in-flight work; after a
+  manual one it is told nothing.
+
+### Added
+- **Agents in flight come from Claude Code, not from memory.** Just before
+  `/session-handoff:save` runs, the module asks Claude Code which subagents and teammates are
+  running, and the save prompt gets an `AGENTS RUNNING NOW` block (or `none`). Compaction
+  snapshots get an `Agents running at compaction` section. Ended agents are left out. Workflow
+  agents and other sessions are not covered by the listing, and the prompt says so.
+- **The save summary ends with how to resume.** `save-record.py` prints the two commands, by topic
+  (the topic's latest handoff) and by full id (this exact handoff), and the agent copies them into
+  the summary it gives after a save.
+- **A fork usually knows its topic from the start.** The module passes the id of the conversation's
+  last row when a session starts as a fork, and `session-start.py` looks for that row in the other
+  transcripts of the same folder. If every session holding it had the same topic, the fork is bound
+  to that topic at once. If one had none, two disagree, or the folder could not be searched
+  completely, the fork waits for Claude Code's own record, as before. This assumes the parent's
+  transcript is in the same folder; forking from a transcript file elsewhere can bind the fork to
+  the topic of other forks of that file. See the fix below.
+- **If the module is not running, the commands say so.** The module leaves a mark per session
+  and Claude Code process. Without one, `/session-handoff:save` prints a `NOTICE:` and
+  `/session-handoff:resume` a `Lifecycle:` header line, with what to do. This is what a change to
+  Claude Code's module API would look like: the commands keep working, but nothing snapshots a
+  compaction or carries a topic across `/clear`.
+- Tests for the module itself (`hooks/register.test.ts`, run with `claude plugin test`), beside the
+  Python suite.
+
+### Fixed
+- **A fresh fork's first slash command lost the topic.** Claude Code writes the record that names a
+  fork's parent together with the fork's first conversation rows, not when the fork starts. A
+  `/session-handoff:save` typed as the first input after `--resume … --fork-session` or
+  `claude attach` therefore ran before the record existed and opened a new topic. Found by a live
+  run on 2.1.330. The fork is now bound when it starts, in the common case where the sessions
+  sharing its conversation leave no doubt about the topic.
+- **An idle backgrounded session could lose its link to its parent for good.** Its transcript holds
+  only a title until the next prompt arrives. A topic lookup in the meantime (for example another
+  session forking, which snapshots every binding) saw a non-empty transcript with no parent and,
+  after a minute, discarded the fork note. The note is now kept until the transcript holds
+  conversation rows.
+- **A subagent compacting its own transcript no longer produces a snapshot** of the main
+  conversation's topic, and its restart is no longer sent the main conversation's nudge. The
+  module ignores compactions, summaries and session starts that carry an agent id, and the
+  steering hook prints nothing for one.
+- **`save-record.py` records only a file written where `new-path.py` said**: a timestamped `.md`
+  directly in the topic's folder. It used to accept any file inside the handoff tree whose
+  frontmatter matched, including one discovery would never load.
+- **An offer to resume a cleared topic survives a second `/clear`.** A session that cleared again
+  before resuming anything used to drop it.
+
+### Removed
+- `scripts/session-end.py` and `scripts/postcompact.py` (which became `scripts/compact.py`), the
+  snapshot-writing half of `scripts/precompact.py`, the per-directory clear-baton and its file
+  lock, and the per-session compaction stash. State files of those kinds left by earlier versions are reclaimed by the age
+  sweep.
+
+### Verified
+- 300 Python tests and 30 module tests; `claude plugin validate`; a type check of the module
+  against Claude Code's own declarations; mutation runs over both suites; independent reviews, the
+  findings of each fixed before the next.
+- Live on Claude Code 2.1.330 in an isolated instance: a save with a running subagent, `/clear`
+  then resume, a manual `/compact`, three automatic compactions, a restart, `--resume
+  --fork-session`, and "Move to background".
+- Not exercised live: compaction of a subagent's own transcript, a precomputed compaction
+  summary, "Summarize from here", and a Claude Code version on which the module fails to load.
+
 ## [3.4.0] — 2026-11-20
 
 What a handoff says, and how far a resumed session trusts it. Prompted by an external review of the

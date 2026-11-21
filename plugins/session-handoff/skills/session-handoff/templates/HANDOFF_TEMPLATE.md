@@ -113,6 +113,9 @@ the next session to recognize a result that arrives, check on the agent, or redo
   when · what the reply unblocks · what to do if it never arrives.
 - Unsent message: to whom · the draft, verbatim · why it has not been sent yet. Also list sending
   it under Next steps.
+If an `AGENTS RUNNING NOW` block was printed with the destination path, it is Claude Code's own list of
+this session's running subagents and teammates: every agent in it gets an entry here, and `none`
+means only that this session has none of its own (workflow agents and other sessions are not listed).
 If an agent is about to finish, collect its result before saving instead of recording it as in flight.
 -->
 

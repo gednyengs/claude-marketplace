@@ -1,41 +1,12 @@
 {
+  "modules": ["./register.ts"],
   "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/session-start.py\" --project-dir \"${CLAUDE_PROJECT_DIR}\" --plugin-data \"${CLAUDE_PLUGIN_DATA}\""
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/session-end.py\" --project-dir \"${CLAUDE_PROJECT_DIR}\" --plugin-data \"${CLAUDE_PLUGIN_DATA}\""
-          }
-        ]
-      }
-    ],
     "PreCompact": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/precompact.py\" --project-dir \"${CLAUDE_PROJECT_DIR}\" --plugin-data \"${CLAUDE_PLUGIN_DATA}\""
-          }
-        ]
-      }
-    ],
-    "PostCompact": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/postcompact.py\" --project-dir \"${CLAUDE_PROJECT_DIR}\" --plugin-data \"${CLAUDE_PLUGIN_DATA}\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/precompact.py\" || true"
           }
         ]
       }

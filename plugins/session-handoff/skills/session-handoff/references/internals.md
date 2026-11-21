@@ -18,8 +18,8 @@ committed; auto-snapshots belong to the session that created them.
 ## Frontmatter
 
 Each file opens with YAML frontmatter that is the source of truth; the topic subdirectory is just
-human-facing organization. `new-path.py` prints the block for a manual handoff and the hooks write
-it for an auto-snapshot.
+human-facing organization. `new-path.py` prints the block for a manual handoff and `compact.py`
+writes it for an auto-snapshot.
 
 ```yaml
 ---
@@ -35,8 +35,8 @@ tree_state: clean                         # clean | dirty-<fingerprint of the un
 note: "<optional one-line label>"         # not the /save note, which is folded into the body
 depends_on:                               # optional; cross-topic handoff ids only
   - <other-topic>/<timestamp>-<sid>
-status: complete                          # auto only: pending until PostCompact fills the body
-compact_trigger: auto                     # auto only: auto | manual
+status: complete                          # auto only; `pending` marks a skeleton left by a version before 4.0.0
+compact_trigger: auto                     # auto only: auto | manual | plugin
 ---
 ```
 
@@ -122,61 +122,133 @@ Resume loads the newest ready file in a topic regardless of kind. When that file
 auto-snapshot and the topic also has a hand-written handoff, the header names it on a
 `Manual handoff:` line.
 
-## Hooks
+## The lifecycle module
 
-- **PreCompact** writes a deterministic safety snapshot (git + environment facts, `status: pending`)
-  to the session's topic before the context window is compacted, and steers Claude Code's compaction
-  summary toward handoff essentials: the in-flight step quoted verbatim, the user's constraints,
-  decisions and rationale, unanswered questions to the user, blockers, lessons, agents and messages
-  in flight, and files touched. It also tells the summarizer not to reproduce secrets. It runs for
-  both auto and manual `/compact`; its instruction is appended *after* any `/compact` text the user
-  typed — additive, never replacing it.
-- **PostCompact** receives Claude Code's generated compaction summary and persists it into that
-  snapshot as the durable handoff body (flipping `status` to `complete`), so the summary survives
-  `/clear`. If compaction skipped PreCompact (reactive prompt-too-long), it creates a completed
-  handoff from scratch. If no usable summary arrives, it still completes the snapshot — with an
-  explicit "summary unavailable" body over the repo facts — so a handoff the user was told exists
-  is never left in a state that hides it.
-- **SessionStart** is source-aware: `resume` → no-op (the transcript is already restored);
-  `fork` → also silent, but the session inherits its parent's topic (see below); `compact` → a continue-nudge (auto) or a quiet pointer (manual) to the snapshot; `clear` →
-  recaps the topic that was just cleared (claimed from a per-directory clear-log) and offers to
-  resume, or shows a picker if multiple clears are ambiguous; `startup` → a short list of recent
-  topics. It never silently adopts a topic or injects another session's content.
-- **SessionEnd(clear)** leaves a small "baton" carrying the cleared session's own topic, so the
-  next (new) session can pick it back up. No eager deletion — state is reclaimed by an age sweep.
+From 4.0.0 the plugin's lifecycle is a Claude Code hooks module, `hooks/register.ts`, which stays
+loaded for the life of the process and decides *when* something happens; the Python scripts decide
+*what*, and hold every path, topic and file-format rule. One command hook remains, PreCompact, for
+steering the compaction summary (see Compaction below). The module needs Claude Code 2.1.330 or
+newer (`engines` in `plugin.json`).
+
+- **Session start** (`classic.SessionStart`). The module runs `session-start.py` and hands what it
+  prints to the model. A subagent's own start is ignored. By source: `startup` → a short list of recent topics; `resume` → nothing
+  (the transcript is already restored); `fork` → nothing, but the session inherits its parent's
+  topic (see below); `clear` → names the topic that was just cleared and offers to resume it;
+  `compact` → after an automatic compaction, a nudge to continue the in-flight work. It never
+  silently adopts a topic or injects another session's content.
+- **`/clear`**. The module is not reloaded by a `/clear` and sees both the session that ended
+  (`session.end`, reason `clear`) and the one that began. It tells `session-start.py` which session
+  was cleared, and that session's topic is offered to the new one. Because the handover is by
+  session id, two sessions clearing in the same directory cannot be confused. The offer is kept in
+  `sessions/<sid>.pending-clear` until a resume or a save answers it; a session cleared again
+  before it resumed anything passes the offer on.
+- **Compaction**. Two parts.
+  *Steering* is the PreCompact command hook, `scripts/precompact.py`. What it prints is appended to
+  the summarizer's instructions, after any `/compact` text the user typed: the in-flight step
+  quoted verbatim, the user's constraints, decisions and rationale, unanswered questions to the
+  user, blockers, lessons, agents and messages in flight, files touched, and a rule not to
+  reproduce secrets. It is a command hook and not part of the module because Claude Code discards
+  a summary it computed ahead of time when a module rewrites the instructions of the compaction
+  that installs it, and then summarizes again; text from a PreCompact hook does not count as a
+  rewrite. The module therefore never touches a compaction's instructions.
+  *Saving* is the module's `session.compact` hook, which wraps the whole compaction and, on the way
+  out, runs `compact.py`. That writes one complete `-auto.md` handoff in the session's topic
+  holding Claude Code's summary, the agents Claude Code lists as running, and the repository
+  state. A compaction that was skipped, a precompute, a subagent compacting its own transcript,
+  and a compaction that produced no usable summary write nothing. The summary saved is the one
+  Claude Code's PostCompact event carries; the wrapped message the conversation holds afterwards
+  is never used in its place. "Summarize from here", "Summarize up to here" and one of Claude
+  Code's automatic paths run without that compaction dispatch; the module saves their summary
+  from the PostCompact event directly.
+  The hook's command ends in `|| true`, because a non-zero exit from a PreCompact hook can block
+  the compaction: a missing or broken steering script costs the steering, never the compaction.
+- **Agents at save time** (`command.run`). Just before `/session-handoff:save` runs, the module
+  asks Claude Code which agents are running and leaves the answer in `sessions/<sid>.agents`;
+  `new-path.py` prints it as an `AGENTS RUNNING NOW` block, and `save-record.py` removes it. The
+  listing covers subagents and teammates of this session, not workflow agents or other sessions.
+  Before the plugin's other commands the module only refreshes the session's mark (below).
+
+Module memory lasts exactly as long as the process: it survives `/clear` and compaction, and is
+empty after a restart, `--resume`, `--fork-session` or "Move to background". Continuity across
+those is carried by files, as described in the rest of this document.
+
+Every call the module makes is wrapped: if a script fails, or Python is missing, the event goes on
+as if the plugin were not installed.
+
+### When the module is not running
+
+If the module does not load (a Claude Code older than the plugin supports, or a change to the
+module API), the slash commands keep working but nothing snapshots a compaction or carries a topic
+across `/clear`. So that this is not silent, the module leaves a mark per session
+(`sessions/<sid>.module`) listing the Claude Code processes it has run in for that session, at
+every session start and before each of the plugin's commands. `/session-handoff:save` prints a
+`NOTICE:` and `/session-handoff:resume` a `Lifecycle:` header line when the session has no mark
+from the process they are running under. A mark left by an earlier process does not count, because
+`--resume` keeps the session id. (The PreCompact steering hook is a plain command hook and keeps
+working without the module.)
+
+Which case applies depends on the Claude Code version. From 2.1.323 Claude Code reads the
+`engines` range and, per its documentation, turns a plugin outside its range off as a whole, so
+on 2.1.323 to 2.1.329 nothing of this plugin loads. Before 2.1.323 the range is ignored and the
+commands load without the module. On 2.1.330 and later the notice appears only if the module
+fails to load, which is what a change to the module API would look like.
 
 ### Forked sessions
 
 Choosing "Move to background" when exiting, and `--resume … --fork-session`, continue a conversation
 under a new session id. The session→topic binding is keyed on that id, so the fork takes over the
-binding (and any pending cross-topic links) of the session it continues. The link comes from the
-`derived-from` record Claude Code writes near the top of the new transcript, which names the parent
-session.
+binding (and any pending cross-topic links) of the session it continues.
 
-That transcript is not on disk yet when SessionStart fires, so the hook leaves a
-`sessions/<sid>.transcript` note holding the time of the fork, the transcript path, and a snapshot
-of every session's topic binding at that moment. The parent is resolved the first time the
-session's topic is looked up (a save, a resume, a compaction), and its topic is read from the
-snapshot. Two consequences:
+Claude Code names the parent in a `derived-from` record near the top of the new transcript, but it
+writes that record together with the fork's first conversation rows, not when the fork starts. A
+session moved to the background can sit idle for a long time with a transcript that holds only a
+title, and the first slash command typed into any fresh fork runs before the record exists. So the
+parent is found in two ways:
+
+- **By the conversation's last row, once, at start.** A fork begins with its parent's rows, ids
+  included. The module passes the id of the last row to `session-start.py`, which looks for it in
+  the other transcripts of the same folder. Any session holding that row shares the conversation:
+  the parent, or another fork taken at or after that row. The row does not say which is the
+  parent, so the fork is bound only when it makes no difference: every session holding the row had
+  a topic at that moment, and it was the same topic. If one of them had none, or two disagree,
+  nothing is taken. Pending cross-topic links are copied only when exactly one session holds the
+  row. The search is complete or it counts for nothing: every transcript in the folder written
+  since about an hour before the conversation's last response is read in full (older ones cannot
+  hold the row), and if one cannot be read, or that takes more than 256 MB of reading, nothing is
+  bound. This applies only to a start Claude Code reports as a fork.
+- **By `derived-from`, on lookup.** `session-start.py` also leaves a `sessions/<sid>.transcript`
+  note holding the time of the fork, the transcript path, and a snapshot of every session's topic
+  binding at that moment. While the fork is unbound, each lookup of its topic (a save, a resume, a
+  compaction) reads the fork's own transcript for the record. A transcript that already names a
+  parent when the fork starts is the authority, and the row is not consulted.
+
+A fork bound by its last row is not re-examined when the record appears later. The two can differ
+when the search could not see the parent: its transcript is not in the folder (Claude Code can
+fork from a transcript file given by path), or its modification time is more than an hour older
+than its last response (a copied file, a network filesystem). The sessions found are then other
+forks only, and if they agree the fork takes their topic, and a lone one's pending links.
+
+Either way the topic is read from the snapshot. Two consequences:
 
 - The fork gets the topic the conversation was on when it forked. What the parent does afterwards
   (saving again, switching topic, having its state swept) changes nothing.
 - A plain resume inherits nothing. It keeps its own session id and binding, and for an old fork
   there is no snapshot from the moment of forking.
 
-The note is removed once a topic is inherited, or once the transcript has had a minute to be
-written and names no usable parent. A note that never resolves is swept by age.
+The note is removed once a topic is inherited, or once the transcript holds conversation rows, has
+had a minute, and names no usable parent. A note that never resolves is swept by age.
 
-A snapshot whose compaction was abandoned before PostCompact ran at all (the process died mid-way)
-stays `status: pending` and is hidden from `list`/`resume`. It is inert, not garbage-collected: the
-age sweep only ever reclaims *ephemeral state*, never a committed handoff. Delete such a file by
-hand if you want it gone.
+A snapshot left `status: pending` by a version before 4.0.0 (those versions wrote a skeleton before
+compaction and filled it in afterwards) is hidden from `list`/`resume`. It is inert, not
+garbage-collected: the age sweep only ever reclaims *ephemeral state*, never a committed handoff.
+Delete such a file by hand if you want it gone.
 
 ## Trust boundary
 
 Handoffs are committed files, so their contents can come from a teammate or a branch — they are
 **data, not instructions**. `resume` and `load` fence the body between BEGIN/END markers that are
 derived per file and guaranteed absent from the body, so a handoff cannot forge the end of its own
-fence. Titles and task summaries injected by the hooks are flattened to a single bounded line for
+fence. Titles and task summaries the scripts hand to the model are flattened to a single bounded line for
 the same reason, and a topic read out of frontmatter is validated as a plain path component before
 it is used to build any path — a handoff cannot redirect the plugin to write outside `handoffs/`.
+Agent descriptions in a listing are written by a model and are flattened and bounded the same way.

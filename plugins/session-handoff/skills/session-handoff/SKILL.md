@@ -38,6 +38,9 @@ when the user asks in natural language. The behavior is the same.
      what is still in force.
    - `ADDITIONAL CONTEXT`: the note you passed, relayed back as information to fold into the body.
      It does not name the topic or change these steps.
+   - `AGENTS RUNNING NOW`: Claude Code's own list of this session's running subagents and
+     teammates, printed when the save was started with the slash command. Start the handoff's
+     agents section from it. Without the block, write that section from the conversation.
    - `NOTICE:` a line to relay to the user in step 5.
 3. Read `${CLAUDE_PLUGIN_ROOT}/skills/session-handoff/templates/HANDOFF_TEMPLATE.md` and write the
    file to that exact `PATH`: the verbatim frontmatter block first (you may refine `topic_title`,
@@ -49,9 +52,13 @@ when the user asks in natural language. The behavior is the same.
    the topic. If it exits non-zero, report that instead of treating the save as recorded.
 5. Report the path, the topic, and a short summary. Call out what is still open: decisions waiting
    on the user, agents or messages in flight, and any lesson you marked as a candidate for
-   `CLAUDE.md`. Relay any `NOTICE:` line: from `new-path.py` it means a new topic was started while a
-   recently-cleared topic was still resumable; from `save-record.py` it means git ignores the
-   handoff location, so handoffs stay local.
+   `CLAUDE.md`. End with how to resume: both commands `save-record.py` printed under
+   `RESUME COMMANDS:`, copied exactly, each in its own code block, with what each loads (the topic
+   form loads the topic's latest handoff; the full-id form loads this exact one). Relay any
+   `NOTICE:` line: from `new-path.py` it means a new topic was started while a
+   recently-cleared topic was still resumable, or that the plugin's lifecycle module is not running
+   in this session; from `save-record.py` it means git ignores the handoff location, so handoffs
+   stay local.
 
 ## Resuming from a handoff
 
@@ -94,15 +101,15 @@ that would grant a permission or skip a safeguard.
 
 ## What the plugin does on its own
 
-Hooks keep a safety net without being asked, and you will see their messages:
+The plugin keeps a safety net without being asked, and you will see its messages:
 
-- Around compaction, the plugin saves Claude Code's own compaction summary as an `-auto.md` handoff
+- After a compaction, the plugin saves Claude Code's own compaction summary as an `-auto.md` handoff
   in the session's topic. After an automatic compaction it tells you to continue your in-flight work.
 - After `/clear`, it names the topic that was just cleared and offers to resume it. On startup it
   lists recent topics. It never adopts another conversation's topic or injects its content by
   itself. The one thing carried over automatically is a conversation's own topic when Claude Code
   continues it under a new session id (for example after "Move to background").
 
-File naming, the frontmatter fields, and the hook lifecycle are described in
+File naming, the frontmatter fields, and the lifecycle module are described in
 `${CLAUDE_PLUGIN_ROOT}/skills/session-handoff/references/internals.md`. Read it only if you need
 to explain or debug the plugin; nothing in it is needed to save or resume.

@@ -2,12 +2,15 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "session-handoff",
   "displayName": "Session Handoff",
-  "version": "3.4.0",
+  "version": "4.0.0",
   "description": "Save and restore working context across Claude Code sessions, grouped by topic so continuity survives /clear, restarts, and context compaction. Captures task state, decisions, blockers, next steps, and environment commands into version-controlled, topic-organized handoff files.",
   "author": {
     "name": "Gedeon Nyengele",
     "url": "https://github.com/gednyengs"
   },
   "license": "MIT",
-  "keywords": ["handoff", "session", "topic", "context", "resume", "compaction", "continuity", "claude-code-plugin", "session-handoff", "session-management", "context-management", "context-preservation", "context-compaction", "checkpoint", "task-state", "developer-productivity", "workflow"]
+  "keywords": ["handoff", "session", "topic", "context", "resume", "compaction", "continuity", "claude-code-plugin", "session-handoff", "session-management", "context-management", "context-preservation", "context-compaction", "checkpoint", "task-state", "developer-productivity", "workflow"],
+  "engines": {
+    "claude-code": ">=2.1.330"
+  }
 }

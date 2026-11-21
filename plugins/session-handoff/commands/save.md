@@ -14,7 +14,8 @@ Deterministic project snapshot (gathered for you just now):
 
 Destination path and the exact frontmatter to use (topic already resolved from
 `--topic`, this session's topic, or a new one — and any cross-topic `depends_on`
-already computed for you):
+already computed for you), followed by any blocks that apply: the previous handoff,
+the agents Claude Code lists as running, and the save note:
 
 !`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/new-path.py" --project-dir "${CLAUDE_PROJECT_DIR}" --plugin-data "${CLAUDE_PLUGIN_DATA}" $ARGUMENTS`
 
@@ -50,10 +51,14 @@ Now do the following:
 
 6. Print the relative path, the topic, and a 3–5 bullet summary of what you captured. Call out
    anything the user should know is still open: decisions waiting on them, agents or messages in
-   flight, and any lesson you marked as a candidate for `CLAUDE.md`. **Relay any `NOTICE:` line**
+   flight, and any lesson you marked as a candidate for `CLAUDE.md`. **End the summary with how to
+   resume**: both commands that `save-record.py` printed under `RESUME COMMANDS:`, each in its own
+   code block so it can be copied, copied exactly, with one line saying what each loads (the topic
+   form loads the topic's latest handoff; the full-id form loads this exact one). **Relay any `NOTICE:` line**
    from either script — from `new-path.py` it means you started a new topic while a
-   recently-cleared topic was still resumable; from `save-record.py` it means git ignores the
-   handoff location, so these files stay local instead of being shared.
+   recently-cleared topic was still resumable, or that the plugin's lifecycle module is not running
+   in this session; from `save-record.py` it means git ignores the handoff location, so these files
+   stay local instead of being shared.
 
 This handoff is meant to be committed with the repo, so write it for your future self and
 your teammates.
