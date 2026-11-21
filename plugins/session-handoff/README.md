@@ -21,6 +21,9 @@ rotates the session id underneath it.
 
 Then restart or run `/reload-plugins`. Verify with `/plugin validate`.
 
+Version 4 needs **Claude Code 2.1.330 or newer**. Its automatic behavior runs as a Claude Code
+hooks module, and older versions are not supported. See [Requirements](#requirements).
+
 ## Quick start
 
 Save where you are before you stop:
@@ -52,6 +55,13 @@ detected build, test, and run commands), then writes a structured handoff. If yo
 session doesn't have a topic yet (pass `--topic` to name a new topic). An optional note is handed to
 the agent as extra information to reflect in the handoff, for example a detail or fact to preserve, a
 constraint, or something to emphasize. It informs the content; it does not name the topic.
+
+The summary you get after a save ends with the two commands that bring the work back:
+
+```
+/session-handoff:resume <topic>                      # the topic's latest handoff
+/session-handoff:resume <topic>/<timestamp>-<sid>    # this exact handoff
+```
 
 When the topic already has a handoff, the new one replaces it as the topic's latest, so the agent is
 pointed at the previous file and told to carry forward whatever is still in force (constraints,
@@ -170,17 +180,23 @@ well for async work and team handoffs.
 
 The plugin protects your context without being asked:
 
-- **Before compaction**, it writes a safety snapshot with real git and environment facts, and steers
-  Claude Code's compaction summary toward what a handoff needs — the in-flight step, your
-  constraints, decisions and their rationale, questions still waiting on you, blockers, lessons,
-  agents and messages in flight, and the files touched. It also tells the summarizer not to
-  reproduce secrets.
-- **After compaction**, it persists Claude Code's own summary into that snapshot as the durable
-  handoff body, so even an unattended auto-compaction leaves behind a complete handoff that survives
-  `/clear`. On automatic compaction it also nudges the session to continue its in-flight work.
-- **After `/clear`**, the next session recognizes the topic you just cleared and offers to resume
-  it.
+- **During compaction**, it steers Claude Code's compaction summary toward what a handoff needs: the
+  in-flight step, your constraints, decisions and their rationale, questions still waiting on you,
+  blockers, lessons, agents and messages in flight, and the files touched. It also tells the
+  summarizer not to reproduce secrets.
+- **After compaction**, it saves Claude Code's own summary as a handoff in the session's topic,
+  together with the repository state and the agents that were running. Even an unattended
+  auto-compaction leaves behind a complete handoff that survives `/clear`. After an automatic
+  compaction it also nudges the session to continue its in-flight work.
+- **After `/clear`**, the next session is told which topic you just cleared and offers to resume
+  it. This works per session, so several sessions in the same directory can clear at the same time
+  without mixing up their topics.
 - **On session start**, you get a short list of recent topics so you can pick one back up.
+- **When you save**, the handoff starts from Claude Code's own list of the subagents and teammates
+  that are running, not from what the model remembers starting.
+
+If this automatic part is not running in a session, `/session-handoff:save` and
+`/session-handoff:resume` say so and tell you what to do. The commands themselves keep working.
 
 ## What you can rely on
 
@@ -189,12 +205,12 @@ The plugin protects your context without being asked:
   merge conflicts.
 - **No lost topic on a crash or restart.** The plugin's internal bookkeeping self-heals: a session
   that crashes before it can clean up is reclaimed automatically after a while, and resuming the
-  same session never forgets its topic. A session you move to the background on exit keeps its
-  topic too, even though Claude Code gives it a new session id.
+  same session never forgets its topic. A session you move to the background on exit, or fork with
+  `--fork-session`, keeps its topic too, even though Claude Code gives it a new session id.
 - **Your files stay yours.** The plugin never edits your `.gitignore` or forces anything into git.
   It writes the files and lets your project decide what's tracked.
 - **Low overhead.** It only touches your context at the moments that matter (compaction, session
-  start and end, and the commands you run), so it adds almost nothing to a normal turn.
+  start, and the commands you run), so it adds almost nothing to a normal turn.
 - **Works without git.** `git` only enriches the repo snapshot. Without it you still get everything
   else.
 
@@ -249,7 +265,12 @@ When compacting, preserve:
 
 ## Development
 
-The test suite is standard-library `unittest` with no fixtures on disk — each test builds a
+The plugin has two parts. `hooks/register.ts` is a Claude Code hooks module that decides *when*
+something happens (session start, `/clear`, compaction, a save). The Python scripts under
+`scripts/` decide *what* happens and hold every path, topic and file-format rule. One command hook
+remains, PreCompact, which prints the text that steers the compaction summary.
+
+The Python suite is standard-library `unittest` with no fixtures on disk; each test builds a
 throwaway project directory:
 
 ```bash
@@ -259,9 +280,16 @@ python3 -m unittest discover -s plugins/session-handoff/tests
 ```
 
 It covers the compaction-summary parser (which is coupled to a Claude Code output format that can
-drift), path containment and the topic-slug grammar, the `/clear` baton protocol, the GC sweep,
-legacy migration, the recorded repo state and the resume-time state check, and an end-to-end run of
-the command scripts as the slash commands invoke them.
+drift), path containment and the topic-slug grammar, the `/clear` handover, forked sessions, the
+agent listing, the GC sweep, legacy migration, the recorded repo state and the resume-time state
+check, and an end-to-end run of the scripts as the commands and the module invoke them.
+
+The module has its own tests, which stub the scripts and check what the module asks of them:
+
+```bash
+claude plugin test plugins/session-handoff
+claude plugin validate plugins/session-handoff
+```
 
 What a handoff contains is defined in one place, `skills/session-handoff/templates/HANDOFF_TEMPLATE.md`,
 and what to do with a loaded handoff in another, `skills/session-handoff/references/resume-protocol.md`.
@@ -269,7 +297,12 @@ The slash commands inject those files and the skill reads them, so edit them the
 
 ## Requirements
 
-- Claude Code CLI
+- Claude Code 2.1.330 or newer. Older versions are not supported: `plugin.json` states the range,
+  and Claude Code turns the plugin off where it is not met. The last release that ran on command
+  hooks is 3.4.0.
+- The plugin's lifecycle is a hooks module, and Claude Code's module API is early access: a future
+  release may change it. If the module stops loading, the slash commands keep working and tell
+  you that the automatic part is off.
 - `python3` (the scripts are pure standard library, with no third-party packages)
 - `git` (optional; it enriches the repo snapshot, and the plugin works fine without it)
 

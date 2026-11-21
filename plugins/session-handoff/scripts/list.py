@@ -38,7 +38,7 @@ def main():
             max_n = int(a)
         # ignore non-numeric noise / empty
 
-    # The current topic is the SESSION's own topic (the cwd pointer is only a hint).
+    # The current topic is the SESSION's own topic.
     cur = "" if lib.session_is_degraded(sid) else lib.safe_slug(lib.session_topic_get(sid))
 
     out = []

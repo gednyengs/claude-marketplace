@@ -54,6 +54,41 @@ never a committed handoff. An abandoned `status: pending` snapshot is therefore 
 - **Body sections changed** (§4): four added, `Resume instructions` merged into `Next steps`. The
   template is the single source; §4 lists them for reference.
 
+**Revision 6 (2026-11-21, v4.0.0):** the lifecycle runs as a Claude Code hooks module
+(`hooks/register.ts`) instead of four command hooks. One command hook remains (PreCompact, for
+steering). Requires Claude Code 2.1.330 or newer; older
+versions are not supported. The topic model, the file layout, the frontmatter and the commands are
+unchanged. What this revision supersedes:
+- **§7 (clear bridge) and §8.2 (SessionEnd)** are gone. The module is not reloaded by a `/clear`
+  and sees the session that ended and the one that began, so `session-start.py` is told which
+  session was cleared (`cleared_from`) and offers that session's topic to the new one. No
+  per-directory baton, no lock, no ambiguity between sessions clearing in the same directory.
+- **§8.3 (PreCompact)** is reduced to steering: `scripts/precompact.py` prints the steering text
+  and writes nothing. It stays a command hook because Claude Code discards a precomputed summary
+  when a module rewrites the instructions of the compaction that installs it. **§8.4
+  (PostCompact)** is replaced by the module's `session.compact` hook, which wraps the compaction
+  and afterwards runs `compact.py` to write one complete snapshot. No `pending` skeleton, no
+  `sessions/<sid>.compact` stash. No usable summary means no file. Compactions that carry an agent
+  id (a subagent's own transcript) and precomputes are not saved. A summarize that runs
+  without the compaction dispatch is saved from its PostCompact event.
+- **§8.1 (SessionStart)**: same branches, now reached through the module. `compact` takes its
+  trigger from the module's memory. `fork` additionally receives the id of the conversation's last
+  row. Once, at start, the fork is bound to a topic if a complete search of the folder's
+  transcripts shows that every session holding that row had the same topic at that moment;
+  otherwise it waits for the `derived-from` record as before. A transcript that already names a parent at start is the authority. The record is
+  written with the fork's first rows rather than about a second after start (verified, 2.1.330).
+  A subagent's own start is ignored.
+- **§3.2 (ephemeral state)**: `sessions/<sid>.compact` and `cwd/<cwd-hash>.clears` are no longer
+  written; leftovers are swept. New: `sessions/<sid>.module` (the Claude Code processes the module
+  has run in for this session) and
+  `sessions/<sid>.agents` (the agents Claude Code listed as running, for the save in progress).
+  The fork note `sessions/<sid>.transcript` and the agents note are JSON; Python reads them.
+- **New**: `/save` prints an `AGENTS RUNNING NOW` block from Claude Code's own listing, and both
+  `/save` and `/resume` report when the module has not run in the session.
+
+The sections below are kept as the record of the design they describe. Where they conflict with
+this revision, this revision and `skills/session-handoff/references/internals.md` are current.
+
 This spec defines the topic-based redesign of the session-handoff plugin. It is grounded in
 empirically verified Claude Code session-lifecycle behavior (see [Appendix A](#appendix-a--verified-lifecycle-facts)).
 
@@ -279,6 +314,8 @@ unknown state.
 
 ## 7. cwd pointer & clear bridge
 
+> **Superseded in 4.0.0** — see Revision 6 at the top. Kept as the record of the 2.x/3.x design.
+
 Two per-cwd artifacts (line-oriented, locked, atomic):
 
 **`<cwd-hash>.ptr`** — the durable "active topic here" pointer.
@@ -325,6 +362,8 @@ updated_at=1780864460407
 
 ## 8. Hooks
 
+> **4.0.0:** these run through the hooks module, not command hooks — see Revision 6 at the top.
+
 ### 8.1 SessionStart — branch on `source` (all verified)
 
 | `source` | sid | Action |
@@ -339,6 +378,8 @@ Output is always byte-capped to keep per-turn cost near zero. Opportunistically 
 
 ### 8.2 SessionEnd — branch on `reason` (cleanup only; not blockable)
 
+> **Superseded in 4.0.0** — see Revision 6 at the top. Kept as the record of the 2.x/3.x design.
+
 | `reason` | Action |
 |---|---|
 | `clear` | Read `sessions/<cleared_sid>.topic`; append a `<cwd-hash>.clears` entry `{ts, cleared_sid, cleared_topic, claimed_by=-}` under `flock`. **Do not** delete the session's `.topic`/`.deps` — a cleared session is still `--resume`-able under its old sid, and eager deletion would orphan it. |
@@ -348,6 +389,8 @@ Output is always byte-capped to keep per-turn cost near zero. Opportunistically 
 > session forget its topic and mis-bucket the next `/save`. All reclamation is deferred to the age sweep.
 
 ### 8.3 PreCompact
+
+> **Superseded in 4.0.0** — see Revision 6 at the top. Kept as the record of the 2.x/3.x design.
 
 1. Write the deterministic auto-snapshot (git+env facts, `status: pending`, `compact_trigger`) to the
    session's topic dir. **No `<!-- TODO -->` placeholders** — the body is filled by PostCompact from
@@ -370,6 +413,8 @@ the auto-snapshot). `topic_title` may still be set to something human in the `/s
 mid-stream is explicitly out of scope; the slug is cosmetic, the title carries readability.)
 
 ### 8.4 PostCompact
+
+> **Superseded in 4.0.0** — see Revision 6 at the top. Kept as the record of the 2.x/3.x design.
 
 Runs after Claude Code generates the compaction summary; receives `{trigger, compact_summary}`.
 `compact_summary` arrives as `<analysis>…chain-of-thought…</analysis><summary>…9-section

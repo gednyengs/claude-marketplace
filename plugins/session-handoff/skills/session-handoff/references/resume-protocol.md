@@ -31,6 +31,9 @@ Header lines:
 - `Origin:` — whether this machine saved this exact file. A handoff with no local record may come
   from a teammate or another clone, or may have been edited after it was saved. The state check
   says whether a handoff is stale; it says nothing about who wrote it.
+- `Lifecycle:` — printed only when the plugin's lifecycle module has not run in this session. The
+  handoff loaded normally, but until the module runs nothing saves a compaction summary or carries
+  the topic across `/clear`. Tell the user in the recap, with the remedy the line gives.
 - `AUTO-RESUME:` — printed only when `--auto` was passed. It says whether the next steps may be
   executed without asking.
 

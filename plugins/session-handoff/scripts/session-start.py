@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
-# SessionStart hook — inject a short context note based on the start source:
+# Session start. The hooks module (hooks/register.ts) runs this whenever Claude
+# Code starts or restarts a conversation, with a JSON payload on stdin, and hands
+# whatever this prints to the model as context. By `source`:
+#
+#   module  -> nothing; the module loaded into a session already under way
 #   resume  -> nothing (the transcript is already restored)
 #   fork    -> nothing either, but the session runs under a new id, so it
 #              inherits the topic of the session it continues
-#   compact -> nudge to continue in-flight work (auto) or a pointer (manual)
+#   compact -> a nudge to continue in-flight work, for an automatic compaction
 #   clear   -> recap the topic that was just cleared and offer to resume it
 #   startup -> a short list of recent topics
+#
+# Three payload fields are the module's own additions to what Claude Code's
+# SessionStart event carries: `cleared_from` (the session a /clear just ended),
+# `compact_trigger` (what started the compaction that just finished), and
+# `last_uuid` (the id of the restored conversation's last row, by which a fork
+# finds the conversation it continues). `seconds_since_last_response` is Claude
+# Code's own and is passed through.
 import os
 import sys
 
@@ -39,6 +50,12 @@ def body():
     sid = lib.session_short(payload)
     src = lib.payload_field(payload, "source")
 
+    # Whatever else happens, the module is running for this session. The commands
+    # look for this mark and say so when it is missing.
+    lib.module_mark(sid)
+    if src == "module":
+        return
+
     if src in ("resume", "fork"):
         # The transcript is already restored, so there is nothing to tell the model.
         # A fork, though, continues the conversation under a NEW session id (moving
@@ -48,56 +65,46 @@ def body():
         # one. A plain resume keeps its id and its binding and leaves no note.
         # This runs before the sweep on purpose: the parent's binding is exactly
         # the kind of old state a sweep reclaims.
-        lib.note_fork(sid, lib.payload_field(payload, "transcript_path"), src)
+        since = None
+        try:
+            since = lib.time.time() - float(lib.payload_field(payload, "seconds_since_last_response"))
+        except ValueError:
+            pass                            # not given: every transcript in the folder is a candidate
+        lib.note_fork(sid, lib.payload_field(payload, "transcript_path"), src,
+                      lib.payload_field(payload, "last_uuid"), since)
         return
 
     lib.gc_sweep(keep_sid=sid)
     lib.migrate_legacy()
 
     if src == "compact":
-        trig = lib.compact_trigger(sid)
-        snap = lib.latest_auto_for_session(sid)
-        lib.compact_clear(sid)
-        # The snapshot PreCompact just wrote is still pending here; the PostCompact
-        # hook fills its body moments later, before the model would open it.
-        pending = bool(snap) and lib.is_pending(snap)
-        if trig == "manual":
-            # User-initiated /compact: they are present and watching — a quiet
-            # pointer, no autonomous nudge.
-            if pending:
-                print("[session-handoff] Context compacted. Durable handoff saved at %s." % lib.rel(snap))
-            return
+        trig = lib.payload_field(payload, "compact_trigger")
         if trig == "auto":
-            lines = ["[session-handoff] Context was compacted mid-task; the conversation was summarized."]
-            if pending:
-                lines.append("A durable handoff was saved at %s." % lib.rel(snap))
-            lines.append("Continue your in-flight work from where you left off "
-                         "(the handoff has the details if you need them).")
-            emit("\n".join(lines))
-            return
-        # No stash: reactive (prompt-too-long) compaction skips PreCompact, so there
-        # is no fresh snapshot yet and no recorded trigger. Nudge softly and
-        # conditionally — this could (rarely) be a manual /compact whose PreCompact
-        # failed, and we don't want to wrongly drive autonomous continuation.
-        emit("[session-handoff] Context was compacted mid-task; the conversation was summarized. "
-             "If this was an automatic compaction, continue your in-flight work from where you left off.")
+            emit("[session-handoff] Context was compacted mid-task; the conversation was summarized.\n"
+                 "Continue your in-flight work from where you left off.")
+        elif not trig:
+            # The module saw no compaction begin, so what started this one is not
+            # known. Nudge softly and conditionally: it could be a /compact the
+            # user is watching, and that must not drive autonomous continuation.
+            emit("[session-handoff] Context was compacted mid-task; the conversation was summarized. "
+                 "If this was an automatic compaction, continue your in-flight work from where you left off.")
+        # manual / plugin: the user (or another plugin) asked for it and is present.
         return
 
     if src == "clear":
         if lib.session_is_degraded(sid):
             return
-        claimed = lib.clears_claim(sid, 120)
-        if claimed == "AMBIGUOUS":
-            emit("=== session-handoff: context cleared; multiple recent clears in this directory. ===\n"
-                 "Run /session-handoff:resume to pick which topic to continue.")
-        elif claimed:
-            parts = claimed.split("\t")
-            ctopic = lib.safe_slug(parts[0])
-            csid = parts[1] if len(parts) > 1 else ""
-            cts = parts[2] if len(parts) > 2 else ""
-            if not ctopic:
-                return                       # unusable baton: say nothing
-            lib.pending_clear_set(sid, ctopic, csid, cts)
+        # The module tells us which session the /clear ended. That session's topic
+        # is offered to this one — offered, not adopted: the user may have cleared
+        # to start something new. A session cleared before it resumed anything
+        # passes on the offer it was holding.
+        prev = lib.short_id(lib.payload_field(payload, "cleared_from"))
+        ctopic = ""
+        if prev and prev != sid and not lib.session_is_degraded(prev):
+            ctopic = (lib.safe_slug(lib.session_topic_get(prev))
+                      or lib.safe_slug(lib.pending_clear_topic(prev)))
+        if ctopic:
+            lib.pending_clear_set(sid, ctopic, prev, str(lib.now_ms()))
             latest = lib.latest_ready_in_topic(ctopic)
             title = ctopic
             summ = ""
@@ -124,5 +131,5 @@ def body():
         emit("=== session-handoff: recent topics in this project ===\n" + lst +
              "\nRun /session-handoff:resume to continue one, or ignore if starting fresh.")
 
-if __name__ == "__main__":          # importable for tests; hooks run it as a script
+if __name__ == "__main__":          # importable for tests; the module runs it as a script
     lib.run_hook(body)

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-# Shared helpers for the session-handoff plugin, imported by the command and
-# hook scripts.
+# Shared helpers for the session-handoff plugin, imported by the command scripts
+# and by the two scripts the hooks module calls (session-start.py, compact.py).
 #
 # Conventions:
-#   - Hook entry points run their body via run_hook(): unexpected errors are
-#     swallowed and the process exits 0, so a hook can never abort the session.
+#   - Scripts the hooks module calls run their body via run_hook(): unexpected
+#     errors are swallowed and the process exits 0, so a lifecycle step can
+#     never abort the session.
 #   - The project directory is read from --project-dir; the state directory from
 #     --plugin-data, else an in-repo .state/ directory.
-#   - Ephemeral state is line-oriented (key=value / TAB) and written atomically
-#     (temp file + os.replace). Per-directory locking is best-effort.
+#   - Ephemeral state is written atomically (temp file + os.replace) and keyed
+#     on the session id, so concurrent sessions never share a file.
 #   - Committed handoffs live under <project>/.claude/sekekama/session-handoff/.
 
 import glob
@@ -22,12 +23,6 @@ import sys
 import tempfile
 import time
 from datetime import datetime
-
-try:
-    import fcntl
-    _HAVE_FCNTL = True
-except ImportError:  # pragma: no cover - non-Unix
-    _HAVE_FCNTL = False
 
 # A value that still looks like an unsubstituted Claude Code token (a failed
 # substitution), e.g. "${CLAUDE_PROJECT_DIR}". NOT merely any "$" — a legit path
@@ -155,7 +150,7 @@ def handoff_dir():
 
 # A topic slug is the only untrusted value interpolated into a handoff path, and
 # it can arrive from places we do not control: a committed handoff's frontmatter,
-# a --topic argument, a baton written by an earlier session. Restrict it to a
+# a --topic argument, state written by an earlier session. Restrict it to a
 # single safe path component. The grammar forbids a leading dot and any path
 # separator, so a slug can never traverse ("../x"), absolutize ("/tmp/x", which
 # os.path.join would silently let swallow the base), or name "." / "..".
@@ -294,7 +289,7 @@ def payload_field(payload, field):
     return "" if v is None else str(v)
 
 
-# --- Generic atomic / locked writes -----------------------------------------
+# --- Atomic writes ------------------------------------------------------------
 
 def _atomic_write_bytes(dest, data):
     """Atomically publish raw bytes to `dest` (temp in same dir, then replace).
@@ -335,63 +330,6 @@ def atomic_write_bytes(dest, data):
     return _atomic_write_bytes(dest, data)
 
 
-def with_lock(lockfile, func, *args, **kwargs):
-    """Run func while holding an exclusive lock on lockfile (best-effort; a
-    no-op lock when fcntl is unavailable — per-sid/per-cwd keying already
-    removes most contention)."""
-    d = os.path.dirname(lockfile) or "."
-    try:
-        os.makedirs(d, exist_ok=True)
-    except OSError:
-        pass
-    if not _HAVE_FCNTL:
-        return func(*args, **kwargs)
-    fh = None
-    try:
-        fh = open(lockfile, "w")
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-    except OSError:
-        pass
-    try:
-        return func(*args, **kwargs)
-    finally:
-        if fh is not None:
-            try:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-            except OSError:
-                pass
-            fh.close()
-
-
-# --- Line-oriented key=value state ------------------------------------------
-
-def kv_get(path, key):
-    if not os.path.isfile(path):
-        return ""
-    try:
-        with open(path) as f:
-            for line in f:
-                if line.startswith(key + "="):
-                    return line[len(key) + 1:].rstrip("\n")
-    except OSError:
-        pass
-    return ""
-
-
-def kv_set(path, key, value):
-    """Read-modify-write preserving other keys. Returns True on success."""
-    lines = []
-    if os.path.isfile(path):
-        try:
-            with open(path) as f:
-                lines = [ln for ln in f.read().split("\n")
-                         if ln and not ln.startswith(key + "=")]
-        except OSError:
-            lines = []
-    lines.append("%s=%s" % (key, value))
-    return atomic_write(path, "\n".join(lines) + "\n")
-
-
 # --- Session->topic map and per-session state -------------------------------
 
 def session_topic_file(sid):
@@ -430,11 +368,42 @@ def session_topic_set(sid, topic):
 # This is a Claude Code format we do not control. If it changes, parent_sessions()
 # finds nothing and behavior falls back to what it was before: no inherited topic.
 #
-# Timing matters: when SessionStart fires for the fork, that transcript has not
-# been written yet (observed on 2.1.330 — the file appears about a second later).
-# So the hook only notes the fork (note_fork: when it happened, and where the
-# transcript will be), and the parent is resolved the first time anything asks
-# for the session's topic.
+# Timing matters: Claude Code writes that record together with the forked
+# session's first conversation rows, not when the session starts (observed on
+# 2.1.330). After `--fork-session` that is a second or two after SessionStart
+# fires. A session moved to the background sits idle, and its transcript holds
+# only a title until the next prompt reaches it — minutes or hours later. So
+# session-start.py only notes the fork (note_fork: when it happened, and where
+# the transcript will be), and the parent is resolved the first time anything asks
+# for the session's topic and the transcript has conversation rows to show.
+#
+# That leaves a gap: the first slash command typed into a fresh fork runs its
+# scripts before any row is written, so the record is not there yet and a save
+# would open a new topic. The hooks module narrows it. When a fork starts it
+# passes the id of the conversation's last row (`last_uuid`). A fork copies its
+# parent's rows with their ids, so any other transcript in the same folder that
+# holds that row belongs to the same conversation: the parent, and any other fork
+# taken at or after that row. Which of them is the parent cannot be told from the
+# row alone, so the fork is bound at start only when it does not matter: EVERY
+# session found holding the row had a topic when the fork happened, and it was
+# the same topic. One holder without a topic (a parent that never saved, say,
+# beside a sibling fork that did) and nothing is taken; the lookup path then
+# decides once `derived-from` names the parent.
+#
+# The search is complete or it counts for nothing: every transcript in the folder
+# that could hold the row is read in full, so a parent whose transcript is there
+# is always among the sessions found. A transcript last written well before the
+# conversation's last response cannot hold a row made after it; those are skipped
+# unread, which is what keeps the reading small. If the rest cannot be read
+# within the byte budget, nothing is bound. This is tried once, when the fork is
+# noted, and never again: by a later lookup the parent may have moved on.
+#
+# What the search cannot know is whether the parent's transcript is in the folder
+# at all. Claude Code can fork from a transcript file given by path, and a file's
+# modification time can be wrong by more than the slack allowed here (a copied
+# file, a network filesystem). Then the sessions found are other forks only, and
+# if they agree the fork takes their topic. That is the one way this path can
+# differ from what `derived-from` later says, and it is not corrected afterwards.
 #
 # What is inherited is the topic the conversation was on WHEN IT FORKED. The note
 # therefore carries a snapshot of every session's binding at that moment: once the
@@ -447,8 +416,12 @@ _DERIVED_SCAN_BYTES = 2 * 1024 * 1024     # the record sits near the top of the 
 _INHERITED_STATE = (".deps", ".pending-clear")
 _FORK_VIA = ("fork", "resume")            # the derivations observed for a continued session
 _FORK_SLACK_S = 10                        # hook ordering and clock granularity around the fork
-_FORK_SETTLE_S = 60                       # how long Claude Code gets to write the transcript head
+_FORK_SETTLE_S = 60                       # how long a transcript with rows gets to name a parent
 _SNAPSHOT_MAX = 2000
+_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_ANCHOR_BUDGET_BYTES = 256 * 1024 * 1024  # read in all; past this the search is incomplete
+_ANCHOR_CHUNK = 1024 * 1024
+_ANCHOR_SLACK_S = 3600                    # clock and write-ordering slack on "written since"
 
 
 def parent_sessions(transcript_path, sid):
@@ -488,6 +461,151 @@ def parent_sessions(transcript_path, sid):
     return out
 
 
+def _transcript_started(transcript_path):
+    """True once the transcript holds conversation rows. Until then it may hold
+    only bookkeeping (a title), and the `derived-from` record has not had its
+    chance to be written. Reads the same bounded prefix as parent_sessions()."""
+    try:
+        if not stat.S_ISREG(os.stat(transcript_path).st_mode):
+            return False
+        with open(transcript_path, "rb") as f:
+            budget = _DERIVED_SCAN_BYTES
+            while budget > 0:
+                raw = f.readline(budget)
+                if not raw:
+                    break
+                budget -= len(raw)
+                if b'"type":"user"' in raw or b'"type":"assistant"' in raw \
+                        or b'"type": "user"' in raw or b'"type": "assistant"' in raw:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _file_holds(path, needles, budget):
+    """True/False: whether the file contains one of `needles`. None when that
+    could not be established: the byte budget (`budget[0]`, shared across files)
+    ran out first, or the file could not be read."""
+    keep = max(len(n) for n in needles) - 1
+    try:
+        with open(path, "rb") as f:
+            carry = b""
+            while True:
+                if budget[0] <= 0:
+                    return None
+                chunk = f.read(min(_ANCHOR_CHUNK, budget[0]))
+                if not chunk:
+                    return False
+                budget[0] -= len(chunk)
+                data = carry + chunk
+                if any(n in data for n in needles):
+                    return True
+                carry = data[-keep:]            # a needle may straddle two chunks
+    except OSError:
+        return None
+
+
+def sessions_holding(anchor, transcript_path, sid, since=None):
+    """(holders, complete). `holders`: short ids of the OTHER sessions whose
+    transcript, in the same folder as `transcript_path`, holds the conversation
+    row with id `anchor`; most recently written first. `complete` is True only
+    when every transcript that could hold the row was read to a verdict: the
+    folder was listed, and nothing was cut short by the byte budget or an error.
+    Callers must not conclude anything from an incomplete search.
+
+    `since` (epoch seconds), when known, is the time of the conversation's last
+    response; a transcript last written before it cannot hold a row made after
+    it and is skipped unread. Only regular files are read, and nothing is looked
+    for but that id."""
+    anchor = (anchor or "").lower() if isinstance(anchor, str) else ""
+    if not _UUID_RE.fullmatch(anchor) or not transcript_path:
+        return [], False
+    folder = os.path.dirname(transcript_path)
+    floor = None
+    if isinstance(since, (int, float)) and not isinstance(since, bool) and since > 0:
+        floor = since - _ANCHOR_SLACK_S
+    found = []
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return [], False
+    complete = True
+    for fn in names:
+        if not fn.endswith(".jsonl"):
+            continue
+        other = short_id(fn[:-len(".jsonl")])
+        if not other or other == sid or other == "nosession":
+            continue
+        full = os.path.join(folder, fn)
+        try:
+            info = os.lstat(full)
+        except OSError:
+            complete = False
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        if floor is not None and info.st_mtime < floor:
+            continue
+        found.append((info.st_mtime, full, other))
+    needles = (('"uuid":"%s"' % anchor).encode(), ('"uuid": "%s"' % anchor).encode())
+    budget = [_ANCHOR_BUDGET_BYTES]
+    out = []
+    for _mtime, full, other in sorted(found, reverse=True):
+        holds = _file_holds(full, needles, budget)
+        if holds is None:
+            complete = False
+        elif holds and other not in out:
+            out.append(other)
+    return out, complete
+
+
+def _copy_inherited(parent, sid, forked_at=None):
+    """Copy the pending links a fork takes over from the session it continues.
+    Never overwrites what the fork already has."""
+    for suffix in _INHERITED_STATE:
+        src = os.path.join(sessions_dir(), parent + suffix)
+        dst = os.path.join(sessions_dir(), sid + suffix)
+        try:
+            if os.path.exists(dst) or not os.path.isfile(src):
+                continue
+            if forked_at is not None and os.path.getmtime(src) > forked_at + _FORK_SLACK_S:
+                continue                    # recorded by the parent after the fork
+            with open(src, "rb") as f:
+                atomic_write_bytes(dst, f.read())
+        except OSError:
+            pass
+
+
+def bind_by_conversation(sid, transcript_path, anchor, topics, since=None):
+    """Bind a fork that is just starting to the topic of the conversation it
+    continues, found by the id of that conversation's last row. Returns the topic,
+    or "" when there is any doubt (see the section comment): the search was not
+    complete, no session holds the row, one that does had no topic, or two
+    disagree.
+
+    `topics` is the {session: topic} snapshot taken at the fork. Pending links
+    are copied only when a single session holds the row: with the parent's
+    transcript in the folder (the ordinary case) that session is the parent."""
+    if not sid or session_is_degraded(sid) or safe_slug(_topic_read(sid)):
+        return ""
+    held, complete = sessions_holding(anchor, transcript_path, sid, since)
+    if not complete:
+        return ""
+    found = set()
+    for other in held:
+        raw = topics.get(other, "") if isinstance(topics, dict) else ""
+        found.add(safe_slug(raw if isinstance(raw, str) else ""))
+    if len(found) != 1 or "" in found:
+        return ""
+    topic = found.pop()
+    if not session_topic_set(sid, topic):
+        return ""
+    if len(held) == 1:
+        _copy_inherited(held[0], sid)
+    return topic
+
+
 def inherit_from_parent(sid, transcript_path, topics=None, forked_at=None):
     """Give a forked session the topic binding (and pending links) of the session
     it continues. Returns the inherited topic, or "" if there was nothing to
@@ -508,18 +626,7 @@ def inherit_from_parent(sid, transcript_path, topics=None, forked_at=None):
             continue
         if not session_topic_set(sid, topic):
             return ""
-        for suffix in _INHERITED_STATE:
-            src = os.path.join(sessions_dir(), parent + suffix)
-            dst = os.path.join(sessions_dir(), sid + suffix)
-            try:
-                if os.path.exists(dst) or not os.path.isfile(src):
-                    continue
-                if forked_at is not None and os.path.getmtime(src) > forked_at + _FORK_SLACK_S:
-                    continue                # recorded by the parent after the fork
-                with open(src, "rb") as f:
-                    atomic_write_bytes(dst, f.read())
-            except OSError:
-                pass
+        _copy_inherited(parent, sid, forked_at)
         return topic
     return ""
 
@@ -556,7 +663,7 @@ def _topics_snapshot():
     return out
 
 
-def note_fork(sid, transcript_path, source):
+def note_fork(sid, transcript_path, source, anchor="", since=None):
     """SessionStart entry point for a session whose conversation was restored.
     Records a fork so its parent can be resolved once the transcript exists.
 
@@ -570,8 +677,18 @@ def note_fork(sid, transcript_path, source):
     if fork_pending(sid):
         return                              # keep the original moment and snapshot
     ensure_state()
+    forked_at, topics = int(time.time()), _topics_snapshot()
     atomic_write(fork_note_file(sid), json.dumps(
-        {"forked_at": int(time.time()), "transcript": transcript_path, "topics": _topics_snapshot()}))
+        {"forked_at": forked_at, "transcript": transcript_path, "topics": topics}))
+    # Settle it now if that can be done without doubt. A transcript that already
+    # names a parent is the authority, whatever topic that parent has; only when
+    # it names none is the conversation's last row consulted, and only for a
+    # start Claude Code itself calls a fork: any other session may have forks of
+    # its own holding its rows, and those are its children, not its parents.
+    if parent_sessions(transcript_path, sid):
+        _inherit_pending(sid)
+    elif source == "fork" and bind_by_conversation(sid, transcript_path, anchor, topics, since):
+        _unlink(fork_note_file(sid))
 
 
 def _fork_note_read(sid):
@@ -589,19 +706,19 @@ def _fork_note_read(sid):
 
 def _inherit_pending(sid):
     """Resolve a noted fork on first use. The note is dropped once the question is
-    settled: a topic was inherited, or Claude Code has had ample time to write the
-    transcript head and it names no parent we can use. Until then it is kept, so a
-    lookup that lands while the file is still being written does not give up."""
+    settled: a topic was inherited, or the transcript holds conversation rows, has
+    had ample time, and names no parent we can use. Until then it is kept, so a
+    lookup that lands while the file is still being written does not give up — and
+    neither does one that lands while a backgrounded session is still idle, whose
+    transcript holds nothing but a title. A note that never settles is reclaimed
+    by the age sweep."""
     forked_at, transcript_path, topics = _fork_note_read(sid)
     if not transcript_path:
         return ""
     topic = inherit_from_parent(sid, transcript_path, topics, forked_at)
     settled = bool(topic)
     if not settled and time.time() - forked_at > _FORK_SETTLE_S:
-        try:
-            settled = os.path.getsize(transcript_path) > 0
-        except OSError:
-            settled = False                 # never written: the age sweep reclaims the note
+        settled = _transcript_started(transcript_path)
     if settled:
         _unlink(fork_note_file(sid))
     return topic
@@ -653,21 +770,150 @@ def pending_clear_clear(sid):
     _unlink(pending_clear_file(sid))
 
 
-def compact_file(sid):
-    return os.path.join(sessions_dir(), sid + ".compact")
+# --- Lifecycle module heartbeat ----------------------------------------------
+#
+# From 4.0.0 the session lifecycle (start, /clear, compaction) is driven by the
+# plugin's hooks module (hooks/register.ts), which calls session-start.py and
+# compact.py. If that module does not load — Claude Code is older than the
+# plugin supports, or its module API changed — the slash commands still work but
+# nothing snapshots a compaction or carries a topic across /clear, and nothing
+# says so. The module therefore leaves a mark per session, and the commands
+# report its absence.
+
+def module_file(sid):
+    return os.path.join(sessions_dir(), sid + ".module")
 
 
-def compact_set(sid, trigger, ts):
+_MODULE_PIDS = 16
+
+
+def _claude_pid():
+    pid = os.environ.get("CLAUDE_PID", "")
+    return pid if pid.isdigit() else ""
+
+
+def _module_marks(sid):
+    try:
+        with open(module_file(sid)) as f:
+            return [ln for ln in f.read().split("\n") if ln == "-" or ln.isdigit()]
+    except OSError:
+        return None
+
+
+def module_mark(sid):
+    """Record that the module is running for this session, in THIS Claude Code
+    process. A session keeps its id across `--resume`, so a mark that only said
+    "seen once" would keep vouching for a module that no longer loads. The file
+    lists the processes that have marked it (a session can be open in two), "-"
+    standing for one that could not name itself."""
+    if not sid or session_is_degraded(sid):
+        return
     ensure_state()
-    atomic_write(compact_file(sid), "trigger=%s\nts=%s\n" % (trigger, ts))
+    mine = _claude_pid() or "-"
+    marks = [m for m in (_module_marks(sid) or []) if m != mine]
+    atomic_write(module_file(sid), "\n".join((marks + [mine])[-_MODULE_PIDS:]) + "\n")
 
 
-def compact_trigger(sid):
-    return kv_get(compact_file(sid), "trigger")
+def module_seen(sid):
+    """True when the module marked this session from the Claude Code process the
+    caller is running under. A caller that cannot name its process, or a mark
+    from a process that could not, is given the benefit of the doubt. A mark file
+    with nothing usable in it is no mark."""
+    if not sid:
+        return False
+    marks = _module_marks(sid)
+    if not marks:
+        return False
+    mine = _claude_pid()
+    return not mine or mine in marks or "-" in marks
 
 
-def compact_clear(sid):
-    _unlink(compact_file(sid))
+MODULE_NOTICE = ("the session-handoff lifecycle module has not run in this session, so compaction "
+                 "snapshots and topic carry-over across /clear are off. Restart Claude Code or run "
+                 "/reload-plugins; if this persists, the installed Claude Code may be older than "
+                 "this plugin supports, or its module API may have changed.")
+
+
+def module_notice(sid):
+    """The notice to print when the lifecycle module left no mark for this session,
+    else "". A session with no usable id is not judged: it has no mark to find."""
+    if not sid or session_is_degraded(sid) or module_seen(sid):
+        return ""
+    return MODULE_NOTICE
+
+
+# --- Agents running right now -------------------------------------------------
+#
+# Only the hooks module can ask Claude Code which agents are running. Just before
+# /session-handoff:save runs it leaves the answer here, and new-path.py prints it
+# so the handoff's "Agents & messages in flight" section starts from what is
+# actually running instead of from the model's recollection.
+
+_AGENT_ENDED = ("completed", "failed", "killed")
+_AGENTS_MAX = 50
+_AGENTS_FRESH_S = 120
+
+
+def agents_file(sid):
+    return os.path.join(sessions_dir(), sid + ".agents")
+
+
+def agents_clean(agents):
+    """Reduce an agent listing from Claude Code to bounded, one-line fields, and
+    drop agents that have ended. Descriptions are written by a model, so they are
+    flattened like any other text on its way into a handoff or a prompt."""
+    out = []
+    for a in agents if isinstance(agents, list) else []:
+        if not isinstance(a, dict):
+            continue
+        status = sanitize_line(str(a.get("status") or ""), 20)
+        if status in _AGENT_ENDED:
+            continue
+        out.append({
+            "id": re.sub(r"[^A-Za-z0-9_@.:-]", "", str(a.get("id") or ""))[:64],
+            "type": sanitize_line(str(a.get("type") or ""), 60),
+            "description": sanitize_line(str(a.get("description") or ""), 160),
+            "status": status,
+        })
+        if len(out) >= _AGENTS_MAX:
+            break
+    return out
+
+
+def agents_lines(agents):
+    """Markdown bullets for a cleaned agent listing."""
+    lines = []
+    for a in agents:
+        lines.append("- %s — %s (status: %s%s)" % (
+            "`%s`" % a["type"].replace("`", "'") if a["type"] else "agent",
+            a["description"].replace("`", "'") or "no description",
+            a["status"] or "unknown",
+            ", id: `%s`" % a["id"] if a["id"] else ""))
+    return lines
+
+
+def agents_write(sid, agents):
+    if not sid or session_is_degraded(sid):
+        return
+    ensure_state()
+    atomic_write(agents_file(sid), json.dumps({"at": int(time.time()), "agents": agents_clean(agents)}))
+
+
+def agents_read(sid):
+    """(agents, known): the listing the module left for this session moments ago.
+    `known` is False when there is none, or it is too old to describe the present."""
+    try:
+        with open(agents_file(sid), encoding="utf-8") as f:
+            note = json.load(f)
+        if time.time() - float(note["at"]) > _AGENTS_FRESH_S:
+            return [], False
+        return agents_clean(note.get("agents")), True
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
+        return [], False
+
+
+def agents_clear(sid):
+    _unlink(agents_file(sid))
 
 
 def _unlink(path):
@@ -677,97 +923,21 @@ def _unlink(path):
         pass
 
 
-# --- cwd hash, pointer, and clears log --------------------------------------
+# --- Per-project key ----------------------------------------------------------
 
 def cwd_hash():
     p = project_dir()
     return hashlib.sha1(p.encode("utf-8", "surrogateescape")).hexdigest()[:16]
 
 
-def clears_file():
-    return os.path.join(cwd_dir(), cwd_hash() + ".clears")
-
-
-def cwd_lock():
-    return os.path.join(cwd_dir(), cwd_hash() + ".lock")
-
-
-# The per-directory "<cwd-hash>.ptr" pointer that v2 wrote here is gone as of
-# 3.3.0: nothing ever read it back, so every save/resume paid a lock and three
-# rewrites for state no resolution path consulted. Topic resolution is keyed on
-# the session and the clear-baton. Leftover .ptr files are reclaimed by the sweep.
-
-
-def _clears_append(csid, ctopic):
-    ensure_state()
-    try:
-        with open(clears_file(), "a") as f:
-            f.write("%s\t%s\t%s\t-\n" % (now_ms(), csid, ctopic or ""))
-    except OSError:
-        pass
-
-
-def clears_append(csid, ctopic):
-    with_lock(cwd_lock(), _clears_append, csid, ctopic)
-
-
-def _clears_claim(nsid, fresh=120):
-    """Claim a clear-baton for a new (post-/clear) session. Returns the full
-    baton row "<topic>\\t<csid>\\t<cts>" on success, "AMBIGUOUS" if >=2 fresh
-    unclaimed, or "" if none / the consume-once rewrite fails."""
-    f = clears_file()
-    if not os.path.isfile(f):
-        return ""
-    now = now_ms()
-    cutoff = now - fresh * 1000
-    try:
-        with open(f) as fh:
-            rows = fh.read().split("\n")
-    except OSError:
-        return ""
-    # Trailing empty element from a final newline is not a record.
-    if rows and rows[-1] == "":
-        rows = rows[:-1]
-    fresh_idx = []
-    for i, line in enumerate(rows):
-        parts = line.split("\t")
-        if len(parts) >= 4 and parts[3] == "-":
-            try:
-                ts = int(parts[0])
-            except ValueError:
-                ts = 0
-            if ts >= cutoff:
-                fresh_idx.append(i)
-    if not fresh_idx:
-        return ""
-    if len(fresh_idx) > 1:
-        return "AMBIGUOUS"
-    idx = fresh_idx[0]
-    parts = rows[idx].split("\t")
-    cts, csid, topic = parts[0], parts[1], parts[2]
-    parts[3] = nsid
-    rows[idx] = "\t".join(parts)
-    # Consume-once: report success ONLY if the rewrite lands; else the baton
-    # must remain unclaimed for another session to take.
-    d = os.path.dirname(f) or "."
-    tmp = None
-    try:
-        fd, tmp = tempfile.mkstemp(prefix=".clr.", dir=d)
-        with os.fdopen(fd, "w") as out:
-            out.write("\n".join(rows) + "\n")
-        os.replace(tmp, f)
-    except OSError:
-        if tmp is not None:
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
-        return ""
-    return "%s\t%s\t%s" % (topic, csid, cts)
-
-
-def clears_claim(nsid, fresh=120):
-    return with_lock(cwd_lock(), _clears_claim, nsid, fresh)
+# The clear-baton ("<cwd-hash>.clears") that 2.x and 3.x wrote here is gone as of
+# 4.0.0. It existed because a SessionEnd hook and the SessionStart hook that
+# follows a /clear are separate processes that share nothing but the working
+# directory, so the topic had to be passed through a file keyed on it — which two
+# sessions clearing in the same directory could not tell apart. The hooks module
+# stays loaded across /clear and sees both session ids, so session-start.py is
+# simply told which session was cleared. The per-directory "<cwd-hash>.ptr"
+# pointer went in 3.3.0. Leftovers of both are reclaimed by the sweep.
 
 
 # --- Handoff filename / id conventions --------------------------------------
@@ -923,18 +1093,11 @@ def all_handoffs_bytime():
     return [p for _b, p in files]
 
 
-def latest_auto_for_session(sid):
-    result = ""
-    for f in all_handoffs_bytime():
-        if is_auto(os.path.basename(f)) and fm_get(f, "session_id") == sid:
-            result = f
-    return result
-
-
 def is_pending(path):
-    """True for an auto-snapshot still awaiting its compaction summary: PreCompact
-    wrote the skeleton but PostCompact hasn't filled it (or compaction aborted).
-    Pending files are hidden from discovery surfaces (list/resume/recent_topics)."""
+    """True for an auto-snapshot skeleton that never got its compaction summary.
+    Versions before 4.0.0 wrote a snapshot in two steps and could leave one behind
+    when a compaction was aborted; 4.0.0 writes a snapshot once, complete. Pending
+    files are hidden from discovery surfaces (list/resume/recent_topics)."""
     return fm_get(path, "status") == "pending"
 
 
@@ -1265,8 +1428,8 @@ def facts():
 
 # --- Recorded repo state, age, and drift ------------------------------------
 #
-# A handoff is a set of claims made at one moment. new-path.py and the compaction
-# hooks record where the repo stood at that moment (frontmatter `head`, `branch`,
+# A handoff is a set of claims made at one moment. new-path.py and compact.py
+# record where the repo stood at that moment (frontmatter `head`, `branch`,
 # `tree_state`), and resume.py compares it with the present, so "is this still
 # true?" is answered by a script instead of being left to the model's judgment.
 #
@@ -1945,34 +2108,16 @@ def gc_sweep(ttl_days=14, keep_sid=""):
                 except OSError:
                     pass
 
-    cutoff_ms = now - ttl_days * 86400 * 1000
+    # Per-directory state written by earlier versions (clear-batons, their locks,
+    # and <=3.2.0 pointers). Nothing reads it any more.
     if os.path.isdir(cdir):
         for fn in os.listdir(cdir):
-            if fn.endswith(".ptr"):         # pointer files left by <=3.2.0
-                fp = os.path.join(cdir, fn)
-                try:
-                    if os.path.getmtime(fp) < cutoff_mtime:
-                        os.remove(fp)
-                except OSError:
-                    pass
+            if not fn.endswith((".ptr", ".clears", ".lock")):
                 continue
-            if not fn.endswith(".clears"):
-                continue
-            cf = os.path.join(cdir, fn)
+            fp = os.path.join(cdir, fn)
             try:
-                with open(cf) as f:
-                    rows = f.read().split("\n")
-                kept = []
-                for ln in rows:
-                    if not ln:
-                        continue
-                    try:
-                        ts = int(ln.split("\t")[0])
-                    except (ValueError, IndexError):
-                        ts = 0
-                    if ts >= cutoff_ms:
-                        kept.append(ln)
-                atomic_write(cf, ("\n".join(kept) + "\n") if kept else "")
+                if os.path.getmtime(fp) < cutoff_mtime:
+                    os.remove(fp)
             except OSError:
                 pass
 

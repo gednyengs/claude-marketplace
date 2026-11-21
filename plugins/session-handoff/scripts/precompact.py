@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
-# PreCompact hook. Before the context is compacted, write a *pending* safety
-# snapshot (frontmatter + repo snapshot + detected commands) for this session's
-# topic, stash the compaction trigger so SessionStart can tell auto from manual,
-# and steer Claude Code's own compaction summary toward handoff-relevant content.
+# PreCompact command hook: the one thing this plugin still does from a command
+# hook. What it prints is appended by Claude Code to the summarizer's
+# instructions, after anything the user typed after /compact.
 #
-# The snapshot's BODY is filled in moments later by the PostCompact hook, which
-# receives Claude Code's generated compaction summary and persists it here
-# (flipping status: pending -> complete). The no-tools summarizer cannot edit
-# files during compaction, so we never ask the model to fill the file by hand.
-import os
+# The hooks module could add the same text by rewriting the compaction's
+# instructions, and in 4.0.0's first draft it did. But Claude Code throws away a
+# summary it computed ahead of time when a module rewrites the instructions of
+# the compaction that installs it, and then summarizes again; text from a
+# PreCompact hook is applied to both and costs nothing. So steering stays here,
+# and the module only saves the result.
+#
+# The summary this shapes is saved into the project tree, where it can be
+# committed, so the no-secrets rule /session-handoff:save carries applies here too.
+import json
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import lib  # noqa: E402
-
-# Appended to the compaction summarizer's instructions. The summary this shapes is
-# persisted into the project tree by PostCompact, where it can be committed — so
-# the no-secrets rule that /save has always carried applies here too.
 STEERING = (
     "When you write the compaction summary, in addition to anything the user asked you to focus "
     "on above, ensure it preserves — where present — these handoff essentials so work can resume "
@@ -31,81 +29,29 @@ STEERING = (
     "request; within that scope, capture these where they apply.")
 
 
-def body():
-    payload = sys.stdin.read()
-    ok, _rest = lib.bootstrap(sys.argv[1:], strict=False)
-    if not ok:
+def main():
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        payload = {}
+    # A subagent compacting its own transcript is not the conversation the
+    # handoff is about, and its summary is not saved.
+    if isinstance(payload, dict) and payload.get("agent_id"):
         return
-    sid = lib.session_short(payload)
-    trigger = lib.payload_field(payload, "trigger") or "auto"
-    degraded = lib.session_is_degraded(sid)
-
-    # Resolve this session's topic; lazily create a provisional one if it has none.
-    # A degraded session has no usable identity, so it neither reads nor writes the
-    # shared "nosession" binding — otherwise two unidentified sessions would adopt
-    # each other's topic. It still gets a snapshot, just under its own fresh topic.
-    slug = "" if degraded else lib.safe_slug(lib.session_topic_get(sid))
-    if not slug:
-        slug = lib.unique_topic_slug("topic-" + lib.timestamp())
-        if not degraded:
-            lib.session_topic_set(sid, slug)
-
-    # Best-effort human title (carried from an earlier handoff in this topic).
-    title = slug
-    latest = lib.latest_ready_in_topic(slug)
-    if latest:
-        t = lib.fm_get(latest, "topic_title")
-        if t:
-            title = t
-
-    # A degraded run has no identity PostCompact could use to find this exact file
-    # again — every degraded session resolves to the same "nosession" key, so
-    # "complete the pending skeleton" would let one such session finish (or adopt)
-    # another's. Publish it finished instead: PostCompact writes its summary to a
-    # separate file rather than reaching for a skeleton that may not be its own.
-    if degraded:
-        status = "complete"
-        note = ["> Auto-snapshot taken before context compaction (trigger: %s)." % trigger,
-                "> This session had no usable session id, so the compaction summary is saved",
-                "> as a separate handoff rather than being merged into this file."]
+    # As UTF-8 bytes: the text holds characters a non-UTF-8 locale cannot encode,
+    # and a failed print here would mean a summary written with no steering at
+    # all, silently.
+    out = getattr(sys.stdout, "buffer", None)
+    if out is not None:
+        out.write((STEERING + "\n").encode("utf-8"))
+        out.flush()
     else:
-        status = "pending"
-        note = ["> Auto-snapshot taken before context compaction (trigger: %s)." % trigger,
-                "> Claude Code's compaction summary is persisted into this file once compaction",
-                "> completes; until then this is a repo-state safety record."]
+        sys.stdout.write(STEERING.encode("ascii", "replace").decode("ascii") + "\n")
 
-    f = lib.new_handoff_path("auto", sid, slug)
-    facts = lib.facts()     # before the digest below, which may use up the git time budget
-    content = "\n".join([
-        "---",
-        "schema: 2",
-        "topic: " + slug,
-        "topic_title: " + lib.fm_quote(title),
-        "session_id: " + sid,
-        "created: " + lib.created_stamp(),
-        "kind: auto",
-        "status: " + status,
-        "compact_trigger: " + trigger,
-    ] + lib.git_fm_lines() + [
-        "---",
-        "",
-        "# Handoff — " + lib.iso(),
-        "",
-    ] + note + [
-        "",
-        facts,
-    ])
-    if lib.atomic_write(f, content + "\n") and status == "complete":
-        lib.receipt_add(f)          # a degraded snapshot is published finished
 
-    # Stash the trigger so SessionStart(source=compact) can tell auto from manual.
-    lib.compact_set(sid, trigger, lib.now_ms())
-
-    # Steer Claude Code's compaction summary. Our stdout is appended to the
-    # summarizer's instructions AFTER any /compact text the user supplied
-    # (Claude Code concatenates them) — additive, never exclusive — so we phrase
-    # it to defer to a deliberately narrow user request.
-    print(STEERING)
-
-if __name__ == "__main__":          # importable for tests; hooks run it as a script
-    lib.run_hook(body)
+if __name__ == "__main__":          # importable for tests; Claude Code runs it as a script
+    try:
+        main()
+    except BaseException:           # a hook must never abort the compaction
+        pass
+    sys.exit(0)
